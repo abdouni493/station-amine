@@ -45,19 +45,6 @@ begin
 end;
 $$;
 
--- L'utilisateur connecté est-il un administrateur ?
--- SECURITY DEFINER : la fonction lit `admin_profiles` sans être bloquée par la
--- RLS de cette même table, ce qui éviterait une récursion infinie de politique.
-create or replace function public.is_admin()
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select exists (select 1 from public.admin_profiles where id = auth.uid());
-$$;
-
 -- L'utilisateur est-il simplement authentifié ?
 create or replace function public.is_authenticated()
 returns boolean
@@ -67,8 +54,11 @@ as $$
   select auth.uid() is not null;
 $$;
 
-grant execute on function public.is_admin()         to anon, authenticated;
 grant execute on function public.is_authenticated() to anon, authenticated;
+
+-- NOTE : `is_admin()` interroge `admin_profiles` ; une fonction `language sql`
+-- voit son corps résolu DÈS SA CRÉATION, elle ne peut donc pas être définie
+-- avant la table. Elle l'est en section 2.1, juste après celle-ci.
 
 
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -90,6 +80,23 @@ create table if not exists public.admin_profiles (
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
+
+-- L'utilisateur connecté est-il un administrateur ?
+-- SECURITY DEFINER : la fonction lit `admin_profiles` sans être bloquée par la
+-- RLS de cette même table, ce qui provoquerait une récursion infinie de
+-- politique. Définie ICI et pas en section 1 : son corps SQL est résolu à la
+-- création, la table doit donc déjà exister.
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from public.admin_profiles where id = auth.uid());
+$$;
+
+grant execute on function public.is_admin() to anon, authenticated;
 
 -- ── 2.2  Paramètres de la station ────────────────────────────────────────────
 create table if not exists public.station_settings (
@@ -1880,8 +1887,12 @@ begin
     begin
       execute format('alter publication supabase_realtime add table public.%I', t);
     exception
-      when duplicate_object then null;   -- déjà publiée
-      when undefined_object then null;   -- publication absente sur cette instance
+      -- Le temps réel est un confort, jamais un prérequis : aucune de ces
+      -- situations ne doit faire échouer l'installation.
+      --   · table déjà publiée ;
+      --   · publication absente sur cette instance ;
+      --   · publication déclarée FOR ALL TABLES (tout est déjà publié).
+      when others then null;
     end;
   end loop;
 end $$;
