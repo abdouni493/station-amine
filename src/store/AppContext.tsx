@@ -104,11 +104,23 @@ export interface PumpNozzle {
   lastIndex: number;
   startIndex: number;
   status: 'Actif' | 'Inactif';
+  /** Piste rattachée AU PISTOLET (page Pistes → « Pistolets rattachés »).
+   *  Quand elle est vide, le pistolet suit la piste de sa pompe. */
+  trackId?: string;
 }
 
 export interface Track {
   id: string;
   name: string;
+}
+
+/** Piste effective d'un pistolet : la sienne si elle est posée, sinon celle de
+ *  sa pompe. C'est LA règle de rattachement — à utiliser partout. */
+export function nozzleTrackId(
+  nozzle: { id: string; pumpId: string; trackId?: string },
+  pumps: Array<{ id: string; trackId?: string }>,
+): string {
+  return nozzle.trackId || pumps.find(p => p.id === nozzle.pumpId)?.trackId || '';
 }
 
 // ─── Armoires (rangements de produits par piste) ──────────────────────────────
@@ -419,6 +431,11 @@ export interface Brigade {
     pompisteId: string;
     trackId: string;
     present: boolean;
+    /** Pistolets réellement tenus par ce pompiste pendant la brigade, choisis à
+     *  l'étape 1 (ceux de sa piste, moins ceux retirés, plus ceux ajoutés).
+     *  Absent sur les brigades créées avant ce choix : on retombe alors sur tous
+     *  les pistolets actifs de sa piste. */
+    nozzleIds?: string[];
     chefActingAsPompiste?: boolean;
   }>;
   startNozzleIndices?: Record<string, number>;
@@ -2239,7 +2256,7 @@ function mapDailyReport(r: any): DailyReport {
   return { id: r.id, date: r.date, fuelRevenue: +r.fuel_revenue, shopRevenue: +r.shop_revenue, totalExpenses: +r.total_expenses, cashToDeposit: +r.cash_to_deposit, tankVariations: r.tank_variations || [], brigadeIds: r.brigade_ids || [] };
 }
 function mapNozzle(r: any): PumpNozzle {
-  return { id: r.id, pumpId: r.pump_id, name: r.name, lastIndex: +r.last_index, startIndex: +r.start_index, status: r.status || 'Actif' };
+  return { id: r.id, pumpId: r.pump_id, name: r.name, lastIndex: +r.last_index, startIndex: +r.start_index, status: r.status || 'Actif', trackId: r.track_id || undefined };
 }
 function mapSettings(r: any): StationSettings {
   return { name: r.name, logo: r.logo_url, logoUrl: r.logo_url, address: r.address, phone: r.phone, email: r.email, fiscalId: r.fiscal_id, rc: r.rc, bankAccountNumber: r.bank_account_number ?? undefined, depositorNumber: r.depositor_number ?? undefined, fuelPrices: r.fuel_prices || emptySettings.fuelPrices, fuelBuyPrices: r.fuel_buy_prices || emptySettings.fuelBuyPrices, conversionTables: r.conversion_tables || {}, productCategories: r.product_categories || emptySettings.productCategories, expenseCategories: r.expense_categories || emptySettings.expenseCategories, productUnits: r.product_units || DEFAULT_PRODUCT_UNITS, decalagePositifActif: r.decalage_positif_actif, decalageNegatifActif: r.decalage_negatif_actif, decalagePositifSeuil: +(r.decalage_positif_seuil ?? 0), decalageNegatifSeuil: +(r.decalage_negatif_seuil ?? 0) };
@@ -2408,10 +2425,10 @@ async function persistAction(action: AppAction): Promise<void> {
         break;
       case 'DELETE_PUMP': await db.deletePump(action.payload); break;
       case 'ADD_NOZZLE':
-        await db.addNozzle({ id: action.payload.id, pump_id: action.payload.pumpId, name: action.payload.name, last_index: action.payload.lastIndex, start_index: action.payload.startIndex, status: action.payload.status });
+        await db.addNozzle({ id: action.payload.id, pump_id: action.payload.pumpId, name: action.payload.name, last_index: action.payload.lastIndex, start_index: action.payload.startIndex, status: action.payload.status, track_id: nz(action.payload.trackId) });
         break;
       case 'UPDATE_NOZZLE':
-        await db.updateNozzle(action.payload.id, { name: action.payload.name, last_index: action.payload.lastIndex, status: action.payload.status });
+        await db.updateNozzle(action.payload.id, { name: action.payload.name, last_index: action.payload.lastIndex, status: action.payload.status, track_id: nz(action.payload.trackId) });
         break;
       case 'DELETE_NOZZLE': await db.deleteNozzle(action.payload); break;
       case 'ADD_SUPPLIER':

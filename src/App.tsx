@@ -21,7 +21,6 @@ import Tacs from "./pages/Tacs";
 import Tpe from "./pages/Tpe";
 import Transfers from "./pages/Transfers";
 import Pompistes from "./pages/Pompistes";
-import BrigadeChefs from "./pages/BrigadeChefs";
 import Brigades from "./pages/Brigades";
 import FuelPOS from "./pages/POS";
 import Suppliers from "./pages/Suppliers";
@@ -43,7 +42,6 @@ import MagasinWorkers from "./pages/MagasinWorkers";
 import MyBrigade from "./pages/MyBrigade";
 import MyPayments from "./pages/MyPayments";
 import MySettings from "./pages/MySettings";
-import ChefBrigade from "./pages/ChefBrigade";
 
 // ─── Route to Module Mapping ───────────────────────────────────────────────────
 /**
@@ -69,7 +67,6 @@ const ROUTE_TO_MODULE: Record<string, string> = {
   "/clients":          "Clients",
   "/suppliers":        "Fournisseurs",
   "/pompistes":        "Pompistes",
-  "/brigade-chefs":    "Chefs de Brigade",
   "/gerants":          "Gérants",
   "/magasin-workers":  "Employés Magasin",
   "/roles-permissions": "Paramètres",
@@ -328,7 +325,6 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
 
         {/* Personnel */}
         <Route path="/pompistes"        element={<ProtectedRoute element={<Pompistes />} moduleId="Pompistes" />} />
-        <Route path="/brigade-chefs"    element={<ProtectedRoute element={<BrigadeChefs />} moduleId="Chefs de Brigade" />} />
         <Route path="/gerants"          element={<ProtectedRoute element={<Gerants />} moduleId="Gérants" />} />
         <Route path="/magasin-workers"  element={<ProtectedRoute element={<MagasinWorkers />} moduleId="Employés Magasin" />} />
         <Route path="/roles-permissions" element={<ProtectedRoute element={<Permissions />} moduleId="Paramètres" />} />
@@ -346,7 +342,6 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
         <Route path="/my-brigade"       element={<MyBrigade />} />
         <Route path="/my-payments"      element={<MyPayments />} />
         <Route path="/my-settings"      element={<MySettings />} />
-        <Route path="/chef-brigade"     element={<ChefBrigade />} />
 
         {/* Default */}
         <Route path="*"                 element={<Navigate to="/dashboard" replace />} />

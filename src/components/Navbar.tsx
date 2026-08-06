@@ -32,7 +32,6 @@ const routeTitles: Record<string, { title: string; subtitle: string; emoji: stri
   "/clients":         { title: "Clients",            subtitle: "Base de données clients",           emoji: "👤" },
   "/suppliers":       { title: "Fournisseurs",       subtitle: "Gestion des fournisseurs",          emoji: "🚚" },
   "/pompistes":       { title: "Pompistes",          subtitle: "Gestion du personnel de vente",     emoji: "👷" },
-  "/brigade-chefs":   { title: "Chefs de Brigade",   subtitle: "Responsables d'équipe",             emoji: "⭐" },
   "/roles-permissions":{ title: "Rôles & Permissions",subtitle: "Contrôle des accès",             emoji: "🔐" },
   "/expenses":        { title: "Dépenses",           subtitle: "Suivi des charges et dépenses",     emoji: "💳" },
   "/daily-report":    { title: "Fiche Journalière",  subtitle: "Rapport quotidien de la station",   emoji: "📄" },

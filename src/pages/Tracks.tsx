@@ -17,16 +17,18 @@ import {
   Fuel,
   ArrowRight,
   Check,
-  Droplets
+  Droplets,
+  Zap
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId } from "@/src/lib/utils";
-import { useAppState, useAppDispatch, useModulePermission, Track, Pump } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, Track, Pump, PumpNozzle, nozzleTrackId } from "../store/AppContext";
 import toast from "react-hot-toast";
 
 interface TrackCardProps {
   track: Track;
   assignedPumps: Pump[];
+  assignedNozzles: PumpNozzle[];
   pompisteCount: number;
   onEdit: () => void;
   onDelete: () => void;
@@ -35,7 +37,7 @@ interface TrackCardProps {
   canDelete?: boolean;
 }
 
-const TrackCard: React.FC<TrackCardProps> = ({ track, assignedPumps, pompisteCount, onEdit, onDelete, onDetail, canEdit = true, canDelete = true }) => {
+const TrackCard: React.FC<TrackCardProps> = ({ track, assignedPumps, assignedNozzles, pompisteCount, onEdit, onDelete, onDetail, canEdit = true, canDelete = true }) => {
   return (
     <motion.div 
       layout
@@ -82,6 +84,25 @@ const TrackCard: React.FC<TrackCardProps> = ({ track, assignedPumps, pompisteCou
           </div>
         </div>
 
+        <div>
+          <p className="text-[10px] font-bold text-slate-400 uppercase mb-3">Pistolets Rattachés ({assignedNozzles.length})</p>
+          {assignedNozzles.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {assignedNozzles.map((nozzle) => (
+                <div key={nozzle.id} className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 rounded-xl border border-purple-100">
+                  <Zap className="w-3 h-3 text-purple-500" />
+                  <span className="text-[11px] font-bold text-primary">{nozzle.name}</span>
+                  {nozzle.trackId === track.id && (
+                    <span className="text-[8px] font-black uppercase text-purple-500 tracking-widest">direct</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[10px] font-bold text-slate-300 uppercase italic">Aucun pistolet</p>
+          )}
+        </div>
+
         <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-50">
           <div>
             <p className="text-[10px] font-bold text-slate-400 uppercase">Pompistes</p>
@@ -112,7 +133,7 @@ const TrackCard: React.FC<TrackCardProps> = ({ track, assignedPumps, pompisteCou
 
 const Tracks = () => {
   const { t } = useTranslation();
-  const { tracks, pumps, pompistes, fuelSales, brigades } = useAppState();
+  const { tracks, pumps, pompistes, fuelSales, brigades, pumpNozzles = [] } = useAppState();
   const dispatch = useAppDispatch();
   const perm = useModulePermission('Pistes');
 
@@ -123,17 +144,25 @@ const Tracks = () => {
   // Form state
   const [name, setName] = useState("");
   const [selectedPumpIds, setSelectedPumpIds] = useState<string[]>([]);
+  // Pistolets rattachés DIRECTEMENT à la piste (indépendamment de leur pompe).
+  const [selectedNozzleIds, setSelectedNozzleIds] = useState<string[]>([]);
   const [showConfirmDelete, setShowConfirmDelete] = useState<string | null>(null);
+
+  /** Pistolets d'une piste : ceux qu'on lui a rattachés + ceux de ses pompes. */
+  const nozzlesOfTrack = (trackId: string) =>
+    pumpNozzles.filter(n => nozzleTrackId(n, pumps) === trackId);
 
   const handleOpenModal = (track?: Track) => {
     if (track) {
       setSelectedTrack(track);
       setName(track.name);
       setSelectedPumpIds(pumps.filter(p => p.trackId === track.id).map(p => p.id));
+      setSelectedNozzleIds(pumpNozzles.filter(n => n.trackId === track.id).map(n => n.id));
     } else {
       setSelectedTrack(null);
       setName("");
       setSelectedPumpIds([]);
+      setSelectedNozzleIds([]);
     }
     setShowModal(true);
   };
@@ -162,6 +191,17 @@ const Tracks = () => {
       }
     });
 
+    // Rattachement pistolet par pistolet. Décocher REND le pistolet à sa pompe
+    // (track_id vidé) : il suit alors de nouveau la piste de celle-ci.
+    pumpNozzles.forEach(nozzle => {
+      const isAssigned = selectedNozzleIds.includes(nozzle.id);
+      if (isAssigned && nozzle.trackId !== trackId) {
+        dispatch({ type: 'UPDATE_NOZZLE', payload: { ...nozzle, trackId } });
+      } else if (!isAssigned && nozzle.trackId === trackId) {
+        dispatch({ type: 'UPDATE_NOZZLE', payload: { ...nozzle, trackId: undefined } });
+      }
+    });
+
     toast.success(selectedTrack ? "Piste mise à jour" : "Piste créée");
     setShowModal(false);
   };
@@ -172,6 +212,10 @@ const Tracks = () => {
       toast.error(`Impossible de supprimer : ${assignedPompistes.length} pompiste(s) assigné(s).`);
       return;
     }
+    // Les pistolets rattachés directement retournent à leur pompe.
+    pumpNozzles.filter(n => n.trackId === id).forEach(n => {
+      dispatch({ type: 'UPDATE_NOZZLE', payload: { ...n, trackId: undefined } });
+    });
     dispatch({ type: 'DELETE_TRACK', payload: id });
     toast.success("Piste supprimée");
     setShowConfirmDelete(null);
@@ -204,6 +248,7 @@ const Tracks = () => {
             key={track.id}
             track={track}
             assignedPumps={pumps.filter(p => p.trackId === track.id)}
+            assignedNozzles={nozzlesOfTrack(track.id)}
             pompisteCount={pompistes.filter(p => p.trackId === track.id).length}
             canEdit={perm.modifier}
             canDelete={perm.supprimer}
@@ -227,7 +272,7 @@ const Tracks = () => {
                     <h3 className="font-black uppercase tracking-widest text-xs flex items-center gap-3 italic text-yellow-400">
                       <MapIcon className="w-5 h-5 text-yellow-400" /> {selectedTrack ? "MODIFIER LA CONFIGURATION" : "NOUVELLE UNITÉ DE PISTE"}
                     </h3>
-                    <p className="text-[10px] text-yellow-300 font-bold mt-1 opacity-80">Configuration de l'emplacement et assignation des pompes</p>
+                    <p className="text-[10px] text-yellow-300 font-bold mt-1 opacity-80">Configuration de l'emplacement, des pompes et des pistolets</p>
                   </div>
                   <button onClick={() => setShowModal(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X className="w-6 h-6 text-white" /></button>
                </div>
@@ -269,6 +314,71 @@ const Tracks = () => {
                        ))}
                     </div>
                   </div>
+
+                  {/* ── Rattachement PISTOLET par PISTOLET ─────────────────────
+                      Un pistolet coché appartient à cette piste, quelle que soit
+                      la piste de sa pompe. Décoché, il suit simplement sa pompe. */}
+                  <div className="space-y-4">
+                    <div className="ml-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] block">Sélectionner les Pistolets</label>
+                      <p className="text-[10px] text-slate-400 font-bold mt-1 not-italic">
+                        Rattache un pistolet à CETTE piste, même si sa pompe est sur une autre.
+                        Non coché, il suit la piste de sa pompe.
+                      </p>
+                    </div>
+                    {pumpNozzles.length === 0 ? (
+                      <div className="p-6 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
+                        <p className="text-xs text-slate-400 font-bold italic">Aucun pistolet configuré — ajoutez-en depuis la page Pompes.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4 max-h-72 overflow-y-auto custom-scrollbar pr-2">
+                        {pumps.filter(pump => pumpNozzles.some(n => n.pumpId === pump.id)).map(pump => (
+                          <div key={pump.id} className="space-y-2">
+                            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">
+                              🔧 {pump.name} <span className="text-slate-300">— {pump.type}</span>
+                            </p>
+                            {pumpNozzles.filter(n => n.pumpId === pump.id).map(nozzle => {
+                              const checked = selectedNozzleIds.includes(nozzle.id);
+                              // Piste dont il hérite quand il n'est rattaché à rien.
+                              const inherited = !nozzle.trackId && pump.trackId === selectedTrack?.id;
+                              const otherTrack = !checked && nozzle.trackId && nozzle.trackId !== selectedTrack?.id
+                                ? tracks.find(t => t.id === nozzle.trackId)
+                                : undefined;
+                              return (
+                                <button
+                                  key={nozzle.id} type="button"
+                                  onClick={() => setSelectedNozzleIds(prev => prev.includes(nozzle.id) ? prev.filter(id => id !== nozzle.id) : [...prev, nozzle.id])}
+                                  className={cn(
+                                    "w-full flex items-center gap-4 p-3 rounded-2xl border-2 transition-all text-left group/nozzle",
+                                    checked ? "border-purple-500 bg-gradient-to-r from-purple-50 to-purple-100/50 shadow-md" : "border-slate-100 hover:border-purple-200"
+                                  )}
+                                >
+                                  <div className={cn(
+                                    "w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all flex-shrink-0",
+                                    checked ? "bg-purple-500 border-purple-500" : "border-slate-200 group-hover/nozzle:border-purple-300"
+                                  )}>
+                                    {checked && <Check className="w-4 h-4 text-white font-black" />}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <p className="text-sm font-black text-blue-900 italic uppercase tracking-tighter">⚡ {nozzle.name}</p>
+                                      <span className={cn(
+                                        "px-2 py-0.5 rounded text-[8px] font-black uppercase",
+                                        nozzle.status === 'Actif' ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"
+                                      )}>{nozzle.status}</span>
+                                      {inherited && <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[8px] font-black uppercase">Hérite de la pompe</span>}
+                                      {otherTrack && <span className="px-2 py-0.5 bg-orange-50 text-orange-600 rounded text-[8px] font-black uppercase">Piste {otherTrack.name}</span>}
+                                    </div>
+                                    <p className="text-[10px] text-slate-400 font-bold uppercase">Dernier Index: {nozzle.lastIndex.toLocaleString()} L</p>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                </form>
                <div className="p-6 bg-gradient-to-r from-slate-50 to-yellow-50 border-t border-slate-200 flex gap-4 shrink-0">
                   <button onClick={() => setShowModal(false)} className="flex-1 text-[10px] font-black uppercase text-blue-900 italic hover:text-blue-800 transition-colors border-2 border-blue-900 rounded-lg py-3 hover:bg-white bg-gradient-to-r from-white to-yellow-50">Annuler</button>
@@ -285,7 +395,7 @@ const Tracks = () => {
                 <div className="w-20 h-20 bg-red-50 text-red-500 rounded-[2rem] flex items-center justify-center mx-auto"><Trash2 className="w-10 h-10" /></div>
                 <div>
                    <h3 className="text-xl font-black text-primary uppercase italic">Supprimer la piste ?</h3>
-                   <p className="text-slate-400 text-sm font-medium mt-2">Cette action est irréversible. Toutes les pompes liées seront détachées.</p>
+                   <p className="text-slate-400 text-sm font-medium mt-2">Cette action est irréversible. Toutes les pompes et tous les pistolets liés seront détachés.</p>
                 </div>
                 <div className="flex gap-4">
                    <button onClick={() => setShowConfirmDelete(null)} className="flex-1 py-4 text-[10px] font-black uppercase text-slate-400">Annuler</button>
@@ -396,6 +506,41 @@ const Tracks = () => {
                              </div>
                           </div>
                         ))}
+                     </div>
+                  </div>
+
+                  <div className="space-y-8 italic">
+                     <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-[0.4em] border-b border-slate-50 pb-4 italic">
+                       Pistolets de la piste ({nozzlesOfTrack(selectedTrack.id).length})
+                     </h4>
+                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        {nozzlesOfTrack(selectedTrack.id).map(nozzle => {
+                          const pump = pumps.find(p => p.id === nozzle.pumpId);
+                          return (
+                            <div key={nozzle.id} className="p-6 bg-white border border-slate-100 rounded-2xl space-y-4 shadow-sm hover:shadow-lg transition-all">
+                               <div className="flex justify-between items-start">
+                                  <div className="p-2 bg-purple-50 rounded-lg"><Zap className="w-4 h-4 text-purple-500" /></div>
+                                  <span className={cn(
+                                    "text-[8px] font-black uppercase px-2 py-0.5 rounded",
+                                    nozzle.status === "Actif" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"
+                                  )}>{nozzle.status}</span>
+                               </div>
+                               <div>
+                                  <p className="text-xs font-black text-primary uppercase tracking-tighter">{nozzle.name}</p>
+                                  <p className="text-[9px] text-slate-400 font-bold uppercase">
+                                    {pump?.name || '—'} · {nozzle.trackId === selectedTrack.id ? 'Rattaché directement' : 'Via sa pompe'}
+                                  </p>
+                               </div>
+                               <div className="pt-2 border-t border-slate-50">
+                                  <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Index Système</p>
+                                  <p className="text-sm font-black text-primary italic">{nozzle.lastIndex.toLocaleString()} L</p>
+                               </div>
+                            </div>
+                          );
+                        })}
+                        {nozzlesOfTrack(selectedTrack.id).length === 0 && (
+                          <p className="col-span-full text-[10px] font-bold text-slate-300 uppercase py-8 text-center italic">Aucun pistolet rattaché à cette piste</p>
+                        )}
                      </div>
                   </div>
                </div>

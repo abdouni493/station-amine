@@ -8,6 +8,7 @@ import {
   CheckCircle2, ArrowUpRight, ArrowDownRight, Star, Zap
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { brigadeNozzlesOfPompiste } from "../lib/brigadeNozzles";
 import { cn } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission } from "../store/AppContext";
 import { exportElementToPdf, printDocumentMode } from "../lib/pdf";
@@ -188,7 +189,6 @@ const DailyReport = () => {
           brigadeId: b.id,
           date:      b.date,
           shift:     b.shift,
-          chefName:  brigadeChefs.find(c => c.id === b.chefId)?.name ?? b.chefId,
           startIdx:  b.startIndices?.[pump.id] ?? 0,
           endIdx:    b.endIndices?.[pump.id]   ?? 0,
           diffLiters:(b.endIndices?.[pump.id] ?? 0) - (b.startIndices?.[pump.id] ?? 0),
@@ -201,17 +201,24 @@ const DailyReport = () => {
 
     /* 3. BRIGADES */
     const brigadeDetails = selBrigades.map(b => {
-      const chef = brigadeChefs.find(c => c.id === b.chefId);
       const accounting = brigadeAccountings?.find(a => a.brigadeId === b.id);
 
-      // Determine active nozzles for this brigade (mirrors BrigadeAccountingModal)
+      // Pistolets tenus par chaque pompiste présent, tels qu'attribués à la
+      // création de la brigade (repli sur la piste pour l'historique).
+      const heldByPompiste = (b.pompisteAssignments || []).filter(a => a.present).map(a => ({
+        assignment: a,
+        nozzles: brigadeNozzlesOfPompiste(b, a.pompisteId, pumpNozzles, pumps),
+      }));
+      const pompisteIdOfNozzle: Record<string, string> = {};
+      heldByPompiste.forEach(({ assignment, nozzles }) =>
+        nozzles.forEach(n => { pompisteIdOfNozzle[n.id] = assignment.pompisteId; }));
+
       const activeNozzles = (() => {
+        const held = heldByPompiste.flatMap(h => h.nozzles);
+        if (held.length > 0) return [...new Map(held.map(n => [n.id, n])).values()];
         if (b.activeNozzleIds && b.activeNozzleIds.length > 0)
           return pumpNozzles.filter(n => b.activeNozzleIds!.includes(n.id));
-        const brigadeTrackIds = (b.pompisteAssignments || []).filter(a => a.present).map(a => a.trackId);
-        const displayPumps = brigadeTrackIds.length > 0
-          ? pumps.filter(p => brigadeTrackIds.includes(p.trackId))
-          : pumps.filter(p => Object.keys(b.startIndices || {}).includes(p.id));
+        const displayPumps = pumps.filter(p => Object.keys(b.startIndices || {}).includes(p.id));
         return pumpNozzles.filter(n => displayPumps.some(p => p.id === n.pumpId));
       })();
 
@@ -219,9 +226,10 @@ const DailyReport = () => {
       const nozzleDetail = activeNozzles.map(nozzle => {
         const pump = pumps.find(p => p.id === nozzle.pumpId);
         const tank = tanks.find(t => t.id === pump?.tankId);
-        const track = tracks.find(t => t.id === pump?.trackId);
-        const assignment = (b.pompisteAssignments || []).find(a => a.trackId === pump?.trackId && a.present);
-        const pompiste = pompistes.find(p => p.id === assignment?.pompisteId);
+        const holderId = pompisteIdOfNozzle[nozzle.id];
+        const assignment = (b.pompisteAssignments || []).find(a => a.pompisteId === holderId);
+        const track = tracks.find(t => t.id === (assignment?.trackId || pump?.trackId));
+        const pompiste = pompistes.find(p => p.id === holderId);
         const startIdx = b.startNozzleIndices?.[nozzle.id] ?? (b.startIndices?.[nozzle.pumpId] || 0);
         const endIdx = b.endNozzleIndices?.[nozzle.id] ?? (b.endIndices?.[nozzle.pumpId] || startIdx);
         const liters = Math.max(0, endIdx - startIdx);
@@ -239,31 +247,34 @@ const DailyReport = () => {
       const totalLiters = nozzleDetail.reduce((s, d) => s + d.liters, 0);
       const totalRevenue = nozzleDetail.reduce((s, d) => s + d.amount, 0);
 
-      // Per-piste summary
-      const pisteDetail = (b.pompisteAssignments || []).filter(a => a.present).map(assignment => {
+      // Récapitulatif par pompiste : sa piste et SES pistolets.
+      const pisteDetail = heldByPompiste.map(({ assignment, nozzles }) => {
         const pompiste = pompistes.find(p => p.id === assignment.pompisteId);
         const track = tracks.find(t => t.id === assignment.trackId);
-        const trackPumps = pumps.filter(p => p.trackId === assignment.trackId);
-        const pisteNozzles = nozzleDetail.filter(d => trackPumps.some(p => p.id === d.pumpId));
+        const myRows = nozzleDetail.filter(d => nozzles.some(n => n.id === d.nozzleId));
+        const pumpIds = [...new Set(myRows.map(d => d.pumpId).filter(Boolean))];
         return {
           pompisteName: pompiste?.name || '—',
           trackName: track?.name || '—',
-          liters: pisteNozzles.reduce((s, d) => s + d.liters, 0),
-          revenue: pisteNozzles.reduce((s, d) => s + d.amount, 0),
-          pumps: trackPumps.map(pump => {
-            const pumpNozzlesForPump = nozzleDetail.filter(d => d.pumpId === pump.id);
+          nozzleNames: nozzles.map(n => n.name),
+          liters: myRows.reduce((s, d) => s + d.liters, 0),
+          revenue: myRows.reduce((s, d) => s + d.amount, 0),
+          pumps: pumpIds.map(pumpId => {
+            const pump = pumps.find(p => p.id === pumpId)!;
+            const pumpRows = myRows.filter(d => d.pumpId === pumpId);
             return {
               pumpName: pump.name, pumpType: pump.type,
-              liters: pumpNozzlesForPump.reduce((s, d) => s + d.liters, 0),
-              revenue: pumpNozzlesForPump.reduce((s, d) => s + d.amount, 0),
-              nozzles: pumpNozzlesForPump,
+              liters: pumpRows.reduce((s, d) => s + d.liters, 0),
+              revenue: pumpRows.reduce((s, d) => s + d.amount, 0),
+              nozzles: pumpRows,
             };
           }).filter(p => p.nozzles.length > 0),
         };
       });
 
       return {
-        id: b.id, date: b.date, shift: b.shift, chefName: chef?.name ?? '—',
+        id: b.id, date: b.date, shift: b.shift,
+        pompisteNames: pisteDetail.map(p => p.pompisteName),
         status: b.status, startTime: b.startTime, endTime: b.endTime,
         totalLiters, totalRevenue,
         nozzleDetail, pisteDetail,
@@ -435,15 +446,11 @@ const DailyReport = () => {
     const recapCash = brigadeCash + shopTotals.selling - allExpenseTotal;
 
     const comparisonAlerts: any[] = [];
-    const brigadeChefById: Record<string, string> = {};
-    brigades.forEach(b => {
-      brigadeChefById[b.id] = brigadeChefs.find(c => c.id === b.chefId)?.name || '—';
-    });
 
     (brigadeAccountings || []).forEach(acc => {
       if (!periodBrigadeIds.has(acc.brigadeId)) return;
       const bDate = brigadeDateById[acc.brigadeId] || '—';
-      const chefName = brigadeChefById[acc.brigadeId] || '—';
+      const brigadeRef = acc.brigadeId.slice(0, 8);
 
       (acc.tankSummary || []).forEach((ts: any) => {
         const ecart = ts.ecart || 0;
@@ -465,7 +472,7 @@ const DailyReport = () => {
           id: `${acc.id}-${ts.tankId}`,
           alertType,
           tankName: ts.name || ts.tankId,
-          chefName,
+          brigadeRef,
           decalageLiters: Math.abs(ecart),
           decalageAmount: ts.ecartMoney || 0,
           brigadeDate: bDate,
@@ -1007,7 +1014,7 @@ const DailyReport = () => {
                       {pump.brigadeIndices.map(bi => (
                         <tr key={bi.brigadeId} className="bg-slate-50/30">
                           <td colSpan={2} className="pl-16 pr-4 py-2 text-[10px] text-slate-400 font-bold">
-                            ↳ {bi.date} — {bi.shift} — {bi.chefName}
+                            ↳ {bi.date} — {bi.shift}
                           </td>
                           <td className="px-5 py-2 text-[10px] font-bold text-slate-400">Index Déb: <span className="text-blue-900 font-black">{bi.startIdx}</span></td>
                           <td className="px-5 py-2 text-[10px] font-bold text-slate-400">Index Fin: <span className="text-blue-900 font-black">{bi.endIdx}</span></td>
@@ -1087,7 +1094,9 @@ const DailyReport = () => {
                         {b.shift === 'Matin' ? '☀️' : b.shift === 'Soir' ? '🌙' : '⭐'}
                       </div>
                       <div>
-                        <p className="font-black text-white uppercase text-sm tracking-tight">{b.chefName}</p>
+                        <p className="font-black text-white uppercase text-sm tracking-tight">
+                          {(b.pompisteNames || []).join(' · ') || 'Brigade ' + b.id.slice(0, 8)}
+                        </p>
                         <p className="text-[10px] text-blue-300 font-bold uppercase">
                           {b.date} · {b.shift} · {b.startTime || '—'} → {b.endTime || '—'}
                         </p>
@@ -1105,16 +1114,30 @@ const DailyReport = () => {
                   <div className="p-4 space-y-3 bg-slate-50">
                     {(b.pisteDetail || []).map((piste: any, pi: number) => (
                       <div key={pi} className="rounded-xl overflow-hidden border-2 border-blue-200 bg-white">
-                        {/* Piste header */}
-                        <div className="px-4 py-2.5 bg-blue-900 flex items-center justify-between">
-                          <div>
-                            <p className="font-black text-white text-sm">{piste.trackName}</p>
-                            <p className="text-[10px] text-blue-300">Pompiste: {piste.pompisteName}</p>
+                        {/* Pompiste header — sa piste et les pistolets qu'il tenait */}
+                        <div className="px-4 py-2.5 bg-blue-900">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="font-black text-white text-sm">{piste.pompisteName}</p>
+                              <p className="text-[10px] text-blue-300">Piste: {piste.trackName}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-black text-yellow-400">{piste.revenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</p>
+                              <p className="text-[10px] text-blue-300">{piste.liters.toFixed(2)} L</p>
+                            </div>
                           </div>
-                          <div className="text-right">
-                            <p className="font-black text-yellow-400">{piste.revenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</p>
-                            <p className="text-[10px] text-blue-300">{piste.liters.toFixed(2)} L</p>
-                          </div>
+                          {(piste.nozzleNames || []).length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              <span className="text-[9px] font-black text-blue-300 uppercase tracking-widest mr-1 self-center">
+                                Pistolets tenus ({piste.nozzleNames.length})
+                              </span>
+                              {piste.nozzleNames.map((name: string, ni: number) => (
+                                <span key={ni} className="px-2 py-0.5 bg-white/10 border border-white/20 rounded text-[9px] font-black text-yellow-300">
+                                  ⚡ {name}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                         {/* Per pump */}
                         {(piste.pumps || []).map((pump: any, pumpi: number) => (
@@ -1156,7 +1179,7 @@ const DailyReport = () => {
                         ))}
                         {/* Piste total */}
                         <div className="px-4 py-2 bg-blue-50 flex justify-between border-t-2 border-blue-200">
-                          <span className="font-black text-blue-900 text-[11px] uppercase">Total Piste {piste.trackName}</span>
+                          <span className="font-black text-blue-900 text-[11px] uppercase">Total {piste.pompisteName} — {piste.trackName}</span>
                           <span className="font-black text-blue-900">{piste.liters.toFixed(2)} L — {piste.revenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</span>
                         </div>
                       </div>
@@ -1587,7 +1610,7 @@ const DailyReport = () => {
                       <thead><tr style={{ background: C.blue800 }}>
                         <th style={{ padding: '6px 9px', textAlign: 'left', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.4, color: '#fff' }}>Type</th>
                         <th style={{ padding: '6px 9px', textAlign: 'left', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.4, color: '#fff' }}>Cuve</th>
-                        <th style={{ padding: '6px 9px', textAlign: 'left', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.4, color: '#fff' }}>Chef</th>
+                        <th style={{ padding: '6px 9px', textAlign: 'left', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.4, color: '#fff' }}>Brigade</th>
                         <th style={{ padding: '6px 9px', textAlign: 'right', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.4, color: '#fff' }}>Écart (L)</th>
                         <th style={{ padding: '6px 9px', textAlign: 'right', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.4, color: '#fff' }}>Montant</th>
                         <th style={{ padding: '6px 9px', textAlign: 'right', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.4, color: '#fff' }}>Date</th>
@@ -1599,7 +1622,7 @@ const DailyReport = () => {
                               {a.alertType === 'VENTE_DIRECTE' ? 'Vente directe' : a.alertType === 'RETOUR_CUVE' ? 'Retour cuve' : a.alertType}
                             </TD>
                             <TD>{a.tankName || '—'}</TD>
-                            <TD>{a.chefName || '—'}</TD>
+                            <TD>{a.brigadeRef || '—'}</TD>
                             <TD align="right">{lit(a.decalageLiters)} L</TD>
                             <TD align="right" bold color="#1e293b">{da(a.decalageAmount)} DA</TD>
                             <TD align="right">{a.brigadeDate}</TD>

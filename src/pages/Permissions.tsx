@@ -25,7 +25,10 @@ const ROLE_CONFIG: Record<WorkerRole, { label: string; color: string; bg: string
   magasin:      { label: "Employé Magasin", color: "text-pink-600",    bg: "bg-pink-50",    border: "border-pink-200" },
 };
 
-const ROLE_OPTIONS: WorkerRole[] = ['pompiste', 'chef_brigade', 'gerant', 'magasin'];
+// `chef_brigade` reste dans ROLE_CONFIG pour afficher les modèles déjà
+// enregistrés, mais n'est plus proposé : l'interface Chef de Brigade a été
+// retirée de l'application.
+const ROLE_OPTIONS: WorkerRole[] = ['pompiste', 'gerant', 'magasin'];
 
 const countGranted = (perms: UserPermissions) =>
   GROUPS.reduce((n, g) => n + g.modules.filter(m => perms[m.id]?.voir).length, 0);

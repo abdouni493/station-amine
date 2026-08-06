@@ -5,6 +5,7 @@ import {
   Search, Plus, Trash2, ChevronRight, ArrowRight, Users, Zap
 } from "lucide-react";
 import { cn, newId, degreesFromLiters } from "@/src/lib/utils";
+import { brigadeNozzlesOfPompiste } from "../lib/brigadeNozzles";
 import {
   Brigade, Pump, Tank, Pompiste, BrigadeChef, PumpNozzle, StationSettings,
   Client, Track, BrigadeAccounting, BrigadeAccountingJustification, FuelType, JustificationTacItem,
@@ -49,7 +50,6 @@ const BrigadeAccountingModal: React.FC<Props> = ({
   brigade, pumps, tanks, pompistes, brigadeChefs, pumpNozzles, settings,
   clients, tracks, currentUserRole, currentUserName, existingAccounting, dispatch, onClose
 }) => {
-  const chef = brigadeChefs.find(c => c.id === brigade.chefId);
   // Types de TAC disponibles — un justificatif TAC les décline en quantités.
   const { tacTypes = [] } = useAppState();
 
@@ -127,11 +127,13 @@ const BrigadeAccountingModal: React.FC<Props> = ({
 
   // ── Derived: active nozzles ──────────────────────────────────────────────────
   const activeNozzles = useMemo(() => {
+    // Les pistolets de la brigade : ceux attribués aux pompistes présents.
+    const held = (brigade.pompisteAssignments || []).filter(a => a.present)
+      .flatMap(a => brigadeNozzlesOfPompiste(brigade, a.pompisteId, pumpNozzles, pumps));
+    if (held.length > 0) return [...new Map(held.map(n => [n.id, n])).values()];
     if (brigade.activeNozzleIds && brigade.activeNozzleIds.length > 0)
       return pumpNozzles.filter(n => brigade.activeNozzleIds!.includes(n.id));
-    const brigadeTrackIds = (brigade.pompisteAssignments || []).filter(a => a.present).map(a => a.trackId);
-    const displayPumps = brigadeTrackIds.length > 0 ? pumps.filter(p => brigadeTrackIds.includes(p.trackId)) : pumps;
-    return pumpNozzles.filter(n => displayPumps.some(p => p.id === n.pumpId));
+    return pumpNozzles;
   }, [brigade, pumps, pumpNozzles]);
 
   // ── Per-nozzle computed data (respects corrections) ─────────────────────────
@@ -427,7 +429,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
               <h2 className="font-black text-sm uppercase tracking-widest">
                 {existingAccounting ? 'MODIFIER COMPTABILITÉ' : 'COMPTABILITÉ BRIGADE'}
               </h2>
-              <p className="text-[11px] text-blue-200 font-bold mt-0.5">{brigade.date} · {brigade.shift} · Chef: {chef?.name || 'N/A'}</p>
+              <p className="text-[11px] text-blue-200 font-bold mt-0.5">{brigade.date} · {brigade.shift}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -668,18 +670,18 @@ const BrigadeAccountingModal: React.FC<Props> = ({
 
                 {/* ─── Detailed breakdown: Piste → Pompes → Pistolets ─── */}
                 <div className="space-y-3">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Détail par Piste / Pompe / Pistolet</p>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Détail par Pompiste / Pompe / Pistolet</p>
 
                   {(brigade.pompisteAssignments || []).filter(a => a.present).map(assignment => {
                     const pompiste = pompistes.find(p => p.id === assignment.pompisteId);
                     const track = tracks.find(t => t.id === assignment.trackId);
-                    const trackPumps = pumps.filter(p => p.trackId === assignment.trackId);
-                    const pompisteTotalLiters = trackPumps.flatMap(pump =>
-                      nozzleData.filter(d => d.pump?.id === pump.id)
-                    ).reduce((s, d) => s + d.liters, 0);
-                    const pompisteRevenue = trackPumps.flatMap(pump =>
-                      nozzleData.filter(d => d.pump?.id === pump.id)
-                    ).reduce((s, d) => s + d.revenue, 0);
+                    // Les chiffres du pompiste viennent des pistolets qui LUI ont
+                    // été attribués (repli sur sa piste pour l'historique).
+                    const heldNozzles = brigadeNozzlesOfPompiste(brigade, assignment.pompisteId, pumpNozzles, pumps);
+                    const heldRows = nozzleData.filter(d => heldNozzles.some(n => n.id === d.nozzle.id));
+                    const trackPumps = pumps.filter(p => heldRows.some(d => d.pump?.id === p.id));
+                    const pompisteTotalLiters = heldRows.reduce((s, d) => s + d.liters, 0);
+                    const pompisteRevenue = heldRows.reduce((s, d) => s + d.revenue, 0);
                     const decalage = decalageByPompiste[assignment.pompisteId];
 
                     return (
@@ -702,7 +704,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                         {/* Per-Pompe breakdown */}
                         <div className="p-4 space-y-3 bg-slate-50">
                           {trackPumps.map(pump => {
-                            const pumpNozzles = nozzleData.filter(d => d.pump?.id === pump.id);
+                            const pumpNozzles = heldRows.filter(d => d.pump?.id === pump.id);
                             const pumpLiters = pumpNozzles.reduce((s, d) => s + d.liters, 0);
                             const pumpRevenue = pumpNozzles.reduce((s, d) => s + d.revenue, 0);
                             if (pumpNozzles.length === 0) return null;
@@ -796,7 +798,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
 
                 {/* Cash received */}
                 <div className="p-5 bg-green-50 rounded-2xl border-2 border-green-200">
-                  <label className="text-[10px] font-black text-green-700 uppercase tracking-widest mb-2 block">Espèces Reçues du Chef (DA)</label>
+                  <label className="text-[10px] font-black text-green-700 uppercase tracking-widest mb-2 block">Espèces Reçues (DA)</label>
                   <input type="number" step="0.01" placeholder="0.00"
                     className="w-full px-4 py-3 bg-white border-2 border-green-300 rounded-xl font-bold text-xl outline-none focus:ring-2 focus:ring-green-400"
                     value={cashReceived || ''}
@@ -1071,16 +1073,13 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                     <select value={restAssignedWorkerId} onChange={e => {
                         const id = e.target.value;
                         setRestAssignedWorkerId(id);
-                        if (!id) setRestAssignedWorkerType('');
-                        else if (chef && id === chef.id) setRestAssignedWorkerType('chef_brigade');
-                        else setRestAssignedWorkerType('pompiste');
+                        setRestAssignedWorkerType(id ? 'pompiste' : '');
                       }}
                       className="w-full px-3 py-2.5 border border-amber-300 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-amber-400 bg-white">
                       <option value="">— Sélectionner un agent —</option>
                       <optgroup label="Pompistes">
                         {pompistes.filter(p => brigade.pompisteIds?.includes(p.id)).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </optgroup>
-                      {chef && <optgroup label="Chef de Brigade"><option value={chef.id}>{chef.name} (Chef)</option></optgroup>}
                     </select>
                   </div>
                 )}

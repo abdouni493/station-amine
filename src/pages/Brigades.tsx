@@ -39,8 +39,9 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId, litersFromDegrees, degreesFromLiters } from "@/src/lib/utils";
-import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, Product, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, JustificationTacItem, detailUnitPrice } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, PumpNozzle, Client, Product, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, JustificationTacItem, detailUnitPrice, nozzleTrackId } from "../store/AppContext";
 import { DenominationCounts, denominationsTotal, normalizeDenominations } from "../lib/denominations";
+import { brigadeNozzlesOfPompiste } from "../lib/brigadeNozzles";
 import DenominationSheet from "../components/DenominationSheet";
 import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -101,10 +102,18 @@ const Brigades = () => {
   const [tankEndErrors, setTankEndErrors] = useState<Record<string, boolean>>({});
 
   // Creation wizard extra state
+  // `pompistePresence[pid]` absent = le pompiste ne fait PAS partie de la brigade.
+  // 'present' = il la tient ; 'absent' = il en fait partie mais ne s'est pas
+  // présenté (une absence est alors enregistrée sur sa fiche).
   const [pompistePresence, setPompistePresence] = useState<Record<string, 'present' | 'absent'>>({});
   const [pisteOverrides, setPisteOverrides] = useState<Record<string, string>>({});
-  const [chefAsPompiste, setChefAsPompiste] = useState(false);
-  const [chefPisteId, setChefPisteId] = useState('');
+  // Pistolets tenus par chaque pompiste : préremplis avec ceux de sa piste, puis
+  // librement retirés ou complétés à l'étape 1.
+  const [pompisteNozzles, setPompisteNozzles] = useState<Record<string, string[]>>({});
+  // Pompistes dont la liste de pistolets a été touchée à la main : leur sélection
+  // n'est plus réalignée automatiquement sur leur piste.
+  const [nozzlesTouched, setNozzlesTouched] = useState<Record<string, boolean>>({});
+  const [nozzlePickerFor, setNozzlePickerFor] = useState<string | null>(null);
   const [canReactivate, setCanReactivate] = useState(false);
 
   // Accounting modal state
@@ -114,18 +123,16 @@ const Brigades = () => {
   const [showFicheModal, setShowFicheModal] = useState(false);
 
   // Filters
-  const [filterChef, setFilterChef] = useState('');
   const [filterPompiste, setFilterPompiste] = useState('');
   const [searchId, setSearchId] = useState('');
   const [filterDate, setFilterDate] = useState('');        // exact day (YYYY-MM-DD)
   const [filterStartDate, setFilterStartDate] = useState(''); // période — du
   const [filterEndDate, setFilterEndDate] = useState('');     // période — au
 
-  // Shared brigade history filter predicate (id / chef / pompiste / date / période).
+  // Shared brigade history filter predicate (id / pompiste / date / période).
   // b.date is 'YYYY-MM-DD' so string comparison is chronologically correct.
   const matchesBrigadeFilters = (b: Brigade) => {
     if (searchId && !b.id.toLowerCase().includes(searchId.toLowerCase())) return false;
-    if (filterChef && b.chefId !== filterChef) return false;
     if (filterPompiste && !b.pompisteIds?.includes(filterPompiste)) return false;
     const d = b.date || '';
     if (filterDate) {
@@ -136,17 +143,14 @@ const Brigades = () => {
     }
     return true;
   };
-  const hasActiveFilters = !!(filterChef || filterPompiste || searchId || filterDate || filterStartDate || filterEndDate);
+  const hasActiveFilters = !!(filterPompiste || searchId || filterDate || filterStartDate || filterEndDate);
   const clearBrigadeFilters = () => {
-    setFilterChef(''); setFilterPompiste(''); setSearchId('');
+    setFilterPompiste(''); setSearchId('');
     setFilterDate(''); setFilterStartDate(''); setFilterEndDate('');
   };
-  
+
   const [step, setStep] = useState(1);
-  const [chefId, setChefId] = useState("");
-  const [selectedPompisteIds, setSelectedPompisteIds] = useState<string[]>([]);
   const [shiftType, setShiftType] = useState<'Matin' | 'Soir' | 'Nuit'>('Matin');
-  const [shiftDate, setShiftDate] = useState(new Date().toISOString().split('T')[0]);
   const [startTime, setStartTime] = useState("06:00");
   const [endTime, setEndTime] = useState("14:00");
   const [startIndices, setStartIndices] = useState<Record<string, number>>({});
@@ -207,18 +211,18 @@ const Brigades = () => {
   const [showNewClientForm, setShowNewClientForm] = useState<string | null>(null);
   const [newClientDraft, setNewClientDraft] = useState({ name: '', phone: '', type: 'PARTICULIER' as Client['type'], paymentMode: 'CASH' as Client['paymentMode'] });
 
-  // ── Relevé des cuves : activation CUVE PAR CUVE (étape 5) ──────────────────
+  // ── Relevé des cuves : activation CUVE PAR CUVE (étape 4) ──────────────────
   // Aucune cuve n'est active par défaut. Une cuve active se relève à la main et
-  // participe à la comparaison cuve ↔ pistolets (étape 6) ; une cuve inactive
+  // participe à la comparaison cuve ↔ pistolets (étape 5) ; une cuve inactive
   // est simplement décrémentée des litres débités par ses pistolets.
   const [activeTankIds, setActiveTankIds] = useState<string[]>([]);
   const isTankActive = (tankId: string) => activeTankIds.includes(tankId);
   const toggleTankActive = (tankId: string) => setActiveTankIds(prev =>
     prev.includes(tankId) ? prev.filter(id => id !== tankId) : [...prev, tankId]);
-  /** Au moins une cuve relevée → l'étape 6 affiche la comparaison détaillée. */
+  /** Au moins une cuve relevée → l'étape 5 affiche la comparaison détaillée. */
   const cuvesActive = activeTankIds.length > 0;
 
-  // ── Pistolets en panne (étape 5) ───────────────────────────────────────────
+  // ── Pistolets en panne (étape 4) ───────────────────────────────────────────
   // Un pistolet en panne n'a rien débité : son index de fin est forcé à son
   // index de début et sa saisie est neutralisée.
   const [brokenNozzleIds, setBrokenNozzleIds] = useState<string[]>([]);
@@ -226,7 +230,7 @@ const Brigades = () => {
   const toggleBrokenNozzle = (nozzleId: string) => setBrokenNozzleIds(prev =>
     prev.includes(nozzleId) ? prev.filter(id => id !== nozzleId) : [...prev, nozzleId]);
 
-  // ── Feuille de versement des espèces, par pompiste (étape 7) ───────────────
+  // ── Feuille de versement des espèces, par pompiste (étape 6) ───────────────
   // Activée pour un pompiste, c'est le comptage des coupures qui FIXE le montant
   // qu'il a remis — exactement comme sur le paiement carburant.
   const [pompisteCashSheets, setPompisteCashSheets] = useState<Record<string, { active: boolean; counts: DenominationCounts }>>({});
@@ -238,7 +242,7 @@ const Brigades = () => {
     const sheet = cashSheetOf(pid);
     return sheet.active ? denominationsTotal(sheet.counts) : (pompistePayments[pid] ?? 0);
   };
-  // Ventes de produits depuis l'armoire de la piste, par pompiste (étape 7).
+  // Ventes de produits depuis l'armoire de la piste, par pompiste (étape 6).
   const [pompisteArmoireSales, setPompisteArmoireSales] = useState<Record<string, ArmoireSaleLine[]>>({});
   const [armoireProductSearch, setArmoireProductSearch] = useState<Record<string, string>>({});
 
@@ -304,83 +308,131 @@ const Brigades = () => {
   const startNozzleIdx = (n: { id: string; lastIndex: number }) => editingBrigade ? (editingBrigade.startNozzleIndices?.[n.id] ?? n.lastIndex) : n.lastIndex;
 
   // ─── Wizard derived data ──────────────────────────────────────────────────
+  /** Piste effective d'un pistolet : la sienne, sinon celle de sa pompe. */
+  const trackOfNozzle = useMemo(() => {
+    const m: Record<string, string> = {};
+    pumpNozzles.forEach(n => { m[n.id] = nozzleTrackId(n, pumps); });
+    return m;
+  }, [pumpNozzles, pumps]);
+
+  /** Pistolets actifs d'une piste — la proposition par défaut pour son pompiste. */
+  const activeNozzlesOfTrack = React.useCallback(
+    (trackId: string) => pumpNozzles.filter(n => n.status === 'Actif' && trackOfNozzle[n.id] === trackId),
+    [pumpNozzles, trackOfNozzle],
+  );
+
+  /** Pistolets tenus par un pompiste sur une brigade DÉJÀ enregistrée. */
+  const brigadeNozzlesOf = (b: Brigade, pompisteId: string) =>
+    brigadeNozzlesOfPompiste(b, pompisteId, pumpNozzles, pumps);
+
+  /** Libellé complet d'un pistolet : son nom, sa pompe et sa piste. */
+  const nozzleLabel = (n: PumpNozzle) => {
+    const pump = pumps.find(p => p.id === n.pumpId);
+    const track = tracks.find(t => t.id === trackOfNozzle[n.id]);
+    return [n.name, pump?.name, track?.name].filter(Boolean).join(' · ');
+  };
+
+  /** Pompistes retenus pour la brigade (présents ou déclarés absents). */
+  const wizPompisteIds = useMemo(
+    () => Object.keys(pompistePresence).filter(pid => pompistePresence[pid]),
+    [pompistePresence],
+  );
+
+  /** Piste retenue pour un pompiste : celle choisie ici, sinon la sienne. */
+  const trackOfPompiste = React.useCallback(
+    (pid: string) => pisteOverrides[pid] ?? (pompistes.find(p => p.id === pid)?.trackId || ''),
+    [pisteOverrides, pompistes],
+  );
+
+  /** Pistolets retenus pour un pompiste : sa sélection dès qu'il y a touché,
+   *  sinon tous les pistolets actifs de sa piste. */
+  const nozzlesOfPompiste = React.useCallback((pid: string): string[] => {
+    if (nozzlesTouched[pid]) return pompisteNozzles[pid] || [];
+    return activeNozzlesOfTrack(trackOfPompiste(pid)).map(n => n.id);
+  }, [nozzlesTouched, pompisteNozzles, activeNozzlesOfTrack, trackOfPompiste]);
+
+  /** Retirer / ajouter un pistolet à un pompiste (étape 1). */
+  const toggleNozzleForPompiste = (pid: string, nozzleId: string) => {
+    const current = nozzlesOfPompiste(pid);
+    const next = current.includes(nozzleId) ? current.filter(id => id !== nozzleId) : [...current, nozzleId];
+    setNozzlesTouched(prev => ({ ...prev, [pid]: true }));
+    setPompisteNozzles(prev => ({ ...prev, [pid]: next }));
+  };
+  /** Revenir aux pistolets de la piste pour ce pompiste. */
+  const resetNozzlesForPompiste = (pid: string) => {
+    setNozzlesTouched(prev => { const next = { ...prev }; delete next[pid]; return next; });
+    setPompisteNozzles(prev => { const next = { ...prev }; delete next[pid]; return next; });
+  };
+
   // Brigade pompiste assignments built from the current wizard selections.
-  const wizAssignments = useMemo<NonNullable<Brigade['pompisteAssignments']>>(() => {
-    const chef = brigadeChefs.find(c => c.id === chefId);
-    const chefPompisteIds = chef?.pompisteIds || [];
-    const a: NonNullable<Brigade['pompisteAssignments']> = chefPompisteIds.map(pid => ({
+  const wizAssignments = useMemo<NonNullable<Brigade['pompisteAssignments']>>(
+    () => wizPompisteIds.map(pid => ({
       pompisteId: pid,
-      trackId: pisteOverrides[pid] || pompistes.find(p => p.id === pid)?.trackId || '',
-      present: (pompistePresence[pid] || 'present') === 'present',
-      chefActingAsPompiste: false,
-    }));
-    if (chefAsPompiste && chefId) {
-      a.push({ pompisteId: chefId, trackId: chefPisteId, present: true, chefActingAsPompiste: true });
-    }
-    return a;
-  }, [chefId, brigadeChefs, pompistes, pisteOverrides, pompistePresence, chefAsPompiste, chefPisteId]);
+      trackId: trackOfPompiste(pid),
+      present: pompistePresence[pid] === 'present',
+      nozzleIds: pompistePresence[pid] === 'present' ? nozzlesOfPompiste(pid) : [],
+    })),
+    [wizPompisteIds, pompistePresence, trackOfPompiste, nozzlesOfPompiste],
+  );
 
   const presentAssignments = useMemo(() => wizAssignments.filter(a => a.present), [wizAssignments]);
 
-  // ─── Pistes en service pour cette brigade ─────────────────────────────────
-  // Seule la piste tenue par un pompiste PRÉSENT a tourné. Les pistolets d'une
-  // piste vacante (pompiste absent, ou piste non attribuée) ne sont ni affichés
-  // ni saisis aux étapes 4 → 6 : leurs index restent inchangés.
-  const serviceTrackIds = useMemo(
-    () => new Set(presentAssignments.map(a => a.trackId).filter(Boolean)),
+  // ─── Pistolets en service pour cette brigade ──────────────────────────────
+  // Un pistolet ne tourne que s'il a été attribué à un pompiste PRÉSENT à
+  // l'étape 1. Tous les autres ne sont ni affichés ni saisis aux étapes 3 → 5 :
+  // leurs index restent inchangés.
+  const serviceNozzleIds = useMemo(
+    () => new Set(presentAssignments.flatMap(a => a.nozzleIds || [])),
     [presentAssignments],
   );
-  const trackOfNozzle = useMemo(() => {
-    const m: Record<string, string> = {};
-    pumpNozzles.forEach(n => { m[n.id] = pumps.find(p => p.id === n.pumpId)?.trackId || ''; });
-    return m;
-  }, [pumpNozzles, pumps]);
-  /** Pistolets actifs des pistes en service — les seuls à relever. */
-  const serviceNozzles = useMemo(
-    () => pumpNozzles.filter(n => n.status === 'Actif' && serviceTrackIds.has(trackOfNozzle[n.id])),
-    [pumpNozzles, serviceTrackIds, trackOfNozzle],
-  );
-  const serviceNozzleIds = useMemo(() => new Set(serviceNozzles.map(n => n.id)), [serviceNozzles]);
   const isServiceNozzle = (nozzleId: string) => serviceNozzleIds.has(nozzleId);
-  /** Pistes tenues pendant la brigade, dans l'ordre d'affichage des pistes. */
-  const serviceTracks = useMemo(() => tracks.filter(t => serviceTrackIds.has(t.id)), [tracks, serviceTrackIds]);
-  /** Nom du pompiste (ou du chef) qui tient une piste. */
-  const trackHolderName = (trackId: string) => {
-    const a = presentAssignments.find(x => x.trackId === trackId);
-    if (!a) return '';
-    return a.chefActingAsPompiste
-      ? `${brigadeChefs.find(c => c.id === a.pompisteId)?.name || 'Chef'} (chef)`
-      : (pompistes.find(p => p.id === a.pompisteId)?.name || '—');
-  };
-  /** Pistes écartées de la saisie (avec pistolets actifs) + motif, pour info. */
-  const offServiceTracks = useMemo(
-    () => tracks
-      .filter(t => !serviceTrackIds.has(t.id))
-      .map(t => {
-        const nozzleCount = pumpNozzles.filter(n => n.status === 'Actif' && trackOfNozzle[n.id] === t.id).length;
-        const absent = wizAssignments.find(a => !a.present && a.trackId === t.id);
+  const serviceNozzles = useMemo(
+    () => pumpNozzles.filter(n => serviceNozzleIds.has(n.id)),
+    [pumpNozzles, serviceNozzleIds],
+  );
+  /** Un groupe de saisie par pompiste présent : sa piste et SES pistolets.
+   *  C'est cette liste qui structure les étapes 3 → 5 — le relevé suit
+   *  exactement ce qui a été attribué à l'étape 1, pistolet « hors piste »
+   *  compris. */
+  const wizNozzleGroups = useMemo(
+    () => presentAssignments.map(a => ({
+      pompisteId: a.pompisteId,
+      pompisteName: pompistes.find(p => p.id === a.pompisteId)?.name || '—',
+      trackName: tracks.find(t => t.id === a.trackId)?.name || 'Sans piste',
+      nozzles: pumpNozzles.filter(n => (a.nozzleIds || []).includes(n.id)),
+    })).filter(g => g.nozzles.length > 0),
+    [presentAssignments, pompistes, tracks, pumpNozzles],
+  );
+  /** Pistolets actifs écartés de la saisie + motif, pour information. */
+  const offServiceNozzles = useMemo(
+    () => pumpNozzles
+      .filter(n => n.status === 'Actif' && !serviceNozzleIds.has(n.id))
+      .map(n => {
+        const trackId = trackOfNozzle[n.id];
+        const track = tracks.find(t => t.id === trackId);
+        const absent = wizAssignments.find(a => !a.present && a.trackId === trackId);
         return {
-          id: t.id,
-          name: t.name,
-          nozzleCount,
+          id: n.id,
+          name: n.name,
+          pumpName: pumps.find(p => p.id === n.pumpId)?.name || '—',
+          trackName: track?.name || 'Sans piste',
           reason: absent
             ? `${pompistes.find(p => p.id === absent.pompisteId)?.name || 'Pompiste'} absent(e)`
-            : 'Aucun pompiste assigné',
+            : 'Non attribué à un pompiste',
         };
-      })
-      .filter(t => t.nozzleCount > 0),
-    [tracks, serviceTrackIds, pumpNozzles, trackOfNozzle, wizAssignments, pompistes],
+      }),
+    [pumpNozzles, serviceNozzleIds, trackOfNozzle, tracks, wizAssignments, pompistes, pumps],
   );
 
-  /** Encart d'information sur les pistes écartées de la saisie (étapes 4 → 6). */
-  const renderOffServiceTracksNote = () => offServiceTracks.length === 0 ? null : (
+  /** Encart d'information sur les pistolets écartés de la saisie (étapes 3 → 5). */
+  const renderOffServiceTracksNote = () => offServiceNozzles.length === 0 ? null : (
     <div className="p-3 rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50">
-      <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">🚫 Pistes non relevées ({offServiceTracks.length})</p>
+      <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">🚫 Pistolets non relevés ({offServiceNozzles.length})</p>
       <div className="space-y-1.5">
-        {offServiceTracks.map(t => (
-          <div key={t.id} className="flex items-center justify-between gap-3 text-[11px] font-bold">
-            <span className="text-slate-600">🛣 {t.name}</span>
-            <span className="text-slate-400 text-right">{t.reason} · {t.nozzleCount} pistolet(s) masqué(s)</span>
+        {offServiceNozzles.map(n => (
+          <div key={n.id} className="flex items-center justify-between gap-3 text-[11px] font-bold">
+            <span className="text-slate-600">⚡ {n.name} <span className="text-slate-400">· {n.pumpName} · {n.trackName}</span></span>
+            <span className="text-slate-400 text-right">{n.reason}</span>
           </div>
         ))}
       </div>
@@ -450,7 +502,7 @@ const Brigades = () => {
 
   /**
    * Niveau de fin d'une cuve.
-   * - Cuve ACTIVÉE à l'étape 5 avec un relevé saisi → valeur mesurée.
+   * - Cuve ACTIVÉE à l'étape 4 avec un relevé saisi → valeur mesurée.
    * - Sinon → niveau de début MOINS les litres débités par les pistolets
    *   rattachés à cette cuve (écart index fin − index début).
    */
@@ -465,7 +517,7 @@ const Brigades = () => {
 
   // Step 6: décalage comparison per tank (nozzleDiff vs cuveDiff).
   // Quand le relevé des cuves est désactivé, aucune comparaison cuve/pistolet
-  // n'est possible : on ne produit aucune alerte (l'étape 6 affiche alors juste
+  // n'est possible : on ne produit aucune alerte (l'étape 5 affiche alors juste
   // l'écart d'index par pistolet).
   const decalageAlerts = useMemo(() => {
     const posSeuil = settings.decalagePositifSeuil ?? 0;
@@ -521,14 +573,16 @@ const Brigades = () => {
     });
     return presentAssignments.map(a => {
       const track = tracks.find(t => t.id === a.trackId);
-      const trackPumps = pumps.filter(p => p.trackId === a.trackId);
-      const trackNozzles = pumpNozzles.filter(n => n.status === 'Actif' && trackPumps.some(p => p.id === n.pumpId));
+      // Le chiffre d'un pompiste vient de SES pistolets (choisis à l'étape 1),
+      // pas de tous ceux de sa piste : il peut en avoir rendu ou repris.
+      const ownNozzles = pumpNozzles.filter(n => (a.nozzleIds || []).includes(n.id));
+      const trackPumps = pumps.filter(p => ownNozzles.some(n => n.pumpId === p.id));
       // Each nozzle is priced with its OWN pump's carburant price so a piste
       // serving several fuel types is computed exactly per type.
       let litersSold = 0;
       let theoretical = 0;
       const byFuel: Record<string, { liters: number; price: number; amount: number }> = {};
-      trackNozzles.forEach(n => {
+      ownNozzles.forEach(n => {
         const pump = trackPumps.find(p => p.id === n.pumpId);
         const fuel = (pump?.type || 'DIESEL') as Tank['type'];
         const price = settings.fuelPrices[fuel] || 0;
@@ -551,14 +605,13 @@ const Brigades = () => {
       const pricePerLiter = !mixedFuel
         ? (byFuel[primaryFuel]?.price ?? settings.fuelPrices[primaryFuel] ?? 0)
         : (litersSold > 0 ? theoretical / litersSold : 0); // weighted avg for display only
-      const pompisteName = a.chefActingAsPompiste
-        ? (brigadeChefs.find(c => c.id === a.pompisteId)?.name || 'Chef')
-        : (pompistes.find(p => p.id === a.pompisteId)?.name || '—');
+      const pompisteName = pompistes.find(p => p.id === a.pompisteId)?.name || '—';
       return {
         pompisteId: a.pompisteId,
         name: pompisteName,
         trackId: a.trackId,
         trackName: track?.name || a.trackId,
+        nozzleIds: a.nozzleIds || [],
         fuelType: fuelKeys.length ? fuelKeys.join(' + ') : primaryFuel,
         primaryFuel,
         byFuel,
@@ -568,14 +621,11 @@ const Brigades = () => {
         theoretical,
       };
     });
-  }, [presentAssignments, pumps, pumpNozzles, tanks, tracks, wizEndNozzleIndices, serviceNozzleIds, brokenNozzleIds, settings, retourCuveByTank, pompistes, brigadeChefs, editingBrigade]);
+  }, [presentAssignments, pumps, pumpNozzles, tanks, tracks, wizEndNozzleIndices, serviceNozzleIds, brokenNozzleIds, settings, retourCuveByTank, pompistes, editingBrigade]);
 
   const handleStartBrigade = () => {
     setIsSubmitting(true);
     setTimeout(() => {
-      const chef = brigadeChefs.find(c => c.id === chefId);
-      const chefPompisteIds = chef?.pompisteIds || [];
-
       // 1-2. Build datetimes
       const startDatetime = `${startDate}T${startHour.padStart(2, '0')}:${startMinute.padStart(2, '0')}:00`;
       const endDatetime = `${endDate}T${endHour.padStart(2, '0')}:${endMinute.padStart(2, '0')}:00`;
@@ -586,7 +636,7 @@ const Brigades = () => {
       const sType: 'Matin' | 'Soir' | 'Nuit' = sh >= 6 && sh < 14 ? 'Matin' : sh >= 14 && sh < 22 ? 'Soir' : 'Nuit';
 
       const assignments = wizAssignments;
-      const presentIds = assignments.filter(a => a.present && !a.chefActingAsPompiste).map(a => a.pompisteId);
+      const presentIds = assignments.filter(a => a.present).map(a => a.pompisteId);
 
       // Edit vs create
       const isEdit = !!editingBrigade;
@@ -595,7 +645,7 @@ const Brigades = () => {
       // 6-7. start references — live system values when creating, the brigade's
       // own recorded start references when editing (helpers handle this).
       // Les niveaux de début sont TOUJOURS enregistrés : ce sont ceux affichés à
-      // l'étape 4 et ils servent de base au décrément des cuves.
+      // l'étape 3 et ils servent de base au décrément des cuves.
       const startNozzleIndices: Record<string, number> = {};
       const startTankLevels: Record<string, { degrees: number; liters: number }> = {};
       pumpNozzles.forEach(n => { startNozzleIndices[n.id] = startNozzleIdx(n); });
@@ -695,7 +745,6 @@ const Brigades = () => {
         createdAt: isEdit ? editingBrigade!.createdAt : new Date().toISOString(),
         date: sDate,
         shift: sType,
-        chefId: chefId || undefined,
         status: 'Clôturée',
         isActive: false,
         startDatetime,
@@ -779,6 +828,9 @@ const Brigades = () => {
               litersSold: s.litersSold,
               trackId: s.trackId,
               trackName: s.trackName,
+              // Pistolets réellement tenus : la fiche de brigade et la fiche
+              // journalière les rejouent tels quels.
+              nozzleIds: s.nozzleIds,
             }];
           })
         ),
@@ -804,13 +856,11 @@ const Brigades = () => {
       // 10. Décalage alerts (non-suppressed) for admin dashboard.
       // On edit, clear the brigade's previous alerts first so they don't pile up.
       if (isEdit) dispatch({ type: 'DELETE_BRIGADE_DECALAGE_ALERTS_BY_BRIGADE', payload: brigadeId });
-      const workersInfo = [
-        ...(chef ? [{ id: chef.id, name: chef.name, role: 'chef_brigade' }] : []),
-        ...assignments.filter(a => a.present).map(a => {
-          const p = pompistes.find(x => x.id === a.pompisteId);
-          return { id: a.pompisteId, name: p?.name || (a.chefActingAsPompiste ? (chef?.name || 'Chef') : '—'), role: a.chefActingAsPompiste ? 'chef_brigade' : 'pompiste' };
-        }),
-      ];
+      const workersInfo = assignments.filter(a => a.present).map(a => ({
+        id: a.pompisteId,
+        name: pompistes.find(x => x.id === a.pompisteId)?.name || '—',
+        role: 'pompiste',
+      }));
       decalageAlerts.filter(a => !a.suppressed && a.type !== 'CORRECT').forEach(al => {
         const alert: BrigadeDecalageAlert = {
           id: newId(),
@@ -818,8 +868,6 @@ const Brigades = () => {
           brigadeDate: sDate,
           startDatetime,
           endDatetime,
-          chefId: chefId || undefined,
-          chefName: chef?.name,
           alertType: al.type,
           tankId: al.tankId,
           tankName: al.tankName,
@@ -868,7 +916,7 @@ const Brigades = () => {
         });
 
         // Record absences for absent pompistes
-        assignments.filter(a => !a.present && !a.chefActingAsPompiste).forEach(a => {
+        assignments.filter(a => !a.present).forEach(a => {
           const pompiste = pompistes.find(p => p.id === a.pompisteId);
           if (pompiste) {
             dispatch({
@@ -897,23 +945,24 @@ const Brigades = () => {
   const loadBrigadeIntoWizard = (b: Brigade) => {
     const acc = brigadeAccountings.find(a => a.brigadeId === b.id);
     setEditingBrigade(b);
-    setChefId(b.chefId || "");
 
-    // presence + piste overrides from stored assignments
+    // Présence, pistes et pistolets rejoués depuis les affectations enregistrées.
     const presence: Record<string, 'present' | 'absent'> = {};
     const overrides: Record<string, string> = {};
-    let chefActing = false; let chefPiste = '';
+    const nozzles: Record<string, string[]> = {};
+    const touched: Record<string, boolean> = {};
     (b.pompisteAssignments || []).forEach(a => {
-      if (a.chefActingAsPompiste) { chefActing = true; chefPiste = a.trackId || ''; return; }
       presence[a.pompisteId] = a.present ? 'present' : 'absent';
       if (a.trackId) overrides[a.pompisteId] = a.trackId;
+      // Brigade créée avant le choix des pistolets : on retombe sur ceux de la
+      // piste (nozzleIds absent), sinon on rejoue exactement la sélection.
+      if (a.nozzleIds) { nozzles[a.pompisteId] = [...a.nozzleIds]; touched[a.pompisteId] = true; }
     });
-    const chef = brigadeChefs.find(c => c.id === b.chefId);
-    (chef?.pompisteIds || []).forEach(pid => { if (!presence[pid]) presence[pid] = 'present'; });
     setPompistePresence(presence);
     setPisteOverrides(overrides);
-    setChefAsPompiste(chefActing);
-    setChefPisteId(chefPiste);
+    setPompisteNozzles(nozzles);
+    setNozzlesTouched(touched);
+    setNozzlePickerFor(null);
 
     // datetimes (string-split to avoid timezone drift)
     const splitDT = (iso?: string) => {
@@ -1011,19 +1060,17 @@ const Brigades = () => {
 
   const resetForm = () => {
     setStep(1);
-    setChefId("");
-    setSelectedPompisteIds([]);
     setStartIndices({});
     setStartTankLevels({});
     setShiftType('Matin');
-    setShiftDate(new Date().toISOString().split('T')[0]);
     setActionMenuOpen(null);
     setActivateStep(1);
     setDeactivateStep(1);
     setPompistePresence({});
     setPisteOverrides({});
-    setChefAsPompiste(false);
-    setChefPisteId('');
+    setPompisteNozzles({});
+    setNozzlesTouched({});
+    setNozzlePickerFor(null);
     setCanReactivate(false);
     // New 7-step wizard resets
     const today = new Date().toISOString().split('T')[0];
@@ -1039,31 +1086,12 @@ const Brigades = () => {
     setShowNewClientForm(null);
     setNewClientDraft({ name: '', phone: '', type: 'PARTICULIER', paymentMode: 'CASH' });
     // Aucune cuve relevée par défaut : seuls les index de fin des pistolets sont
-    // demandés. Chaque cuve s'active indépendamment à l'étape 5.
+    // demandés. Chaque cuve s'active indépendamment à l'étape 4.
     setActiveTankIds([]);
     setBrokenNozzleIds([]);
     setPompisteCashSheets({});
     setPompisteArmoireSales({});
     setArmoireProductSearch({});
-  };
-
-  const handleSaveEditBrigade = () => {
-    if (!editingBrigade) return;
-    
-    const updatedBrigade: Brigade = {
-      ...editingBrigade,
-      chefId: chefId || undefined,
-      shift: shiftType,
-      date: shiftDate,
-      startTime,
-      endTime
-    };
-
-    dispatch({ type: 'UPDATE_BRIGADE', payload: updatedBrigade });
-    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: "Brigade mise à jour" } });
-    setShowEditModal(false);
-    setEditingBrigade(null);
-    resetForm();
   };
 
   const handleClotureSubmit = () => {
@@ -1126,11 +1154,6 @@ const Brigades = () => {
     return pumps.filter(p => trackIds.includes(p.trackId));
   }, [activeBrigade, activePompistesInBrigade, pumps]);
 
-  const activePumpsForSelection = useMemo(() => {
-    const trackIds = pompistes.filter(p => selectedPompisteIds.includes(p.id)).map(p => p.trackId).filter(Boolean);
-    return pumps.filter(p => trackIds.includes(p.trackId));
-  }, [selectedPompisteIds, pompistes, pumps]);
-
   const pompisteBilan = useMemo(() => {
     const data: Record<string, any> = {};
     activePompistesInBrigade.forEach(pompiste => {
@@ -1186,11 +1209,6 @@ const Brigades = () => {
           <input placeholder="🔍 Rechercher par ID..." value={searchId} onChange={e => setSearchId(e.target.value)}
             className="pl-9 pr-4 py-2.5 border-2 border-slate-200 rounded-xl text-sm font-bold w-56 focus:border-yellow-400 outline-none transition-colors" />
         </div>
-        <select value={filterChef} onChange={e => setFilterChef(e.target.value)}
-          className="px-4 py-2.5 border-2 border-slate-200 rounded-xl text-sm font-bold focus:border-yellow-400 outline-none bg-white">
-          <option value="">Tous les Chefs</option>
-          {brigadeChefs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
         <select value={filterPompiste} onChange={e => setFilterPompiste(e.target.value)}
           className="px-4 py-2.5 border-2 border-slate-200 rounded-xl text-sm font-bold focus:border-yellow-400 outline-none bg-white">
           <option value="">Tous les Pompistes</option>
@@ -1225,144 +1243,6 @@ const Brigades = () => {
         )}
       </div>
 
-      {/* Vue Gérant — désactivée, gérée par le bloc unifié ci-dessous */}
-      {false && (() => {
-        const filteredBrigades = [...brigades].reverse().filter(matchesBrigadeFilters);
-        return (
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredBrigades.length > 0 ? filteredBrigades.map((b) => {
-              const chef = brigadeChefs.find(c => c.id === b.chefId);
-              const pompistesList = pompistes.filter(p => b.pompisteIds?.includes(p.id));
-              const tanksList = tanks.filter(t => Object.keys(b.startTankLevels || {}).includes(t.id));
-              
-              return (
-                <motion.div
-                  key={b.id}
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="card-glass p-6 rounded-2xl border border-slate-50 hover:border-primary/30 transition-all group"
-                >
-                  {/* Header */}
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex-1">
-                      <h3 className="text-sm font-black text-primary uppercase mb-1">{b.date}</h3>
-                      <p className="text-[10px] text-slate-400 font-bold">{b.id}</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className={cn("px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-tighter whitespace-nowrap", b.status === "Ouverte" ? "bg-green-100 text-green-700" : b.status === "Planifiée" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-400")}>
-                        {b.status === "Ouverte" ? "En cours" : b.status}
-                      </span>
-                      
-                      <div className="relative inline-block">
-                        <button
-                          onClick={() => setActionMenuOpen(actionMenuOpen === b.id ? null : b.id)}
-                          className="p-2 hover:bg-slate-100 rounded-lg text-slate-300 group-hover:text-primary transition-all"
-                          aria-label="Menu"
-                        >
-                          <MoreVertical className="w-5 h-5" />
-                        </button>
-
-                        <AnimatePresence>
-                          {actionMenuOpen === b.id && (
-                            <motion.div
-                              initial={{ opacity: 0, y: -8, scale: 0.95 }}
-                              animate={{ opacity: 1, y: 0, scale: 1 }}
-                              exit={{ opacity: 0, y: -8, scale: 0.95 }}
-                              transition={{ duration: 0.15 }}
-                              className="absolute right-0 mt-2 w-52 bg-white border border-slate-100 rounded-xl shadow-lg z-50 overflow-hidden"
-                            >
-                              <div className="divide-y divide-slate-100">
-                                <button
-                                  onClick={() => { setSelectedBrigade(b); setShowDetail(true); setDetailTab('info'); setActionMenuOpen(null); }}
-                                  className="w-full px-4 py-3 text-left text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2 transition-colors"
-                                >
-                                  <EyeIcon className="w-4 h-4" /> Voir Détails
-                                </button>
-                                {b.status === 'Clôturée' && (currentUserRole === 'admin' || currentUserRole === 'gerant') && (
-                                  <button
-                                    onClick={() => { setSelectedBrigade(b); setShowAccountingModal(true); setActionMenuOpen(null); }}
-                                    className="w-full px-4 py-3 text-left text-sm font-bold text-emerald-600 hover:bg-emerald-50 flex items-center gap-2 transition-colors"
-                                  >
-                                    <DollarSign className="w-4 h-4" /> Comptabilité
-                                  </button>
-                                )}
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Chef Info */}
-                  <div className="flex items-center gap-3 mb-4 pb-4 border-b border-slate-100">
-                    <div className="w-8 h-8 bg-primary text-white rounded-lg flex items-center justify-center font-bold text-xs">
-                      {chef?.name[0]}
-                    </div>
-                    <div>
-                      <p className="text-xs font-black text-slate-700">{chef?.name}</p>
-                      <p className="text-[9px] text-slate-400">{b.shift}</p>
-                    </div>
-                  </div>
-
-                  {/* Details Grid */}
-                  <div className="space-y-3 mb-4">
-                    {/* Pompistes */}
-                    <div>
-                      <p className="text-[9px] font-bold text-slate-400 uppercase mb-2">Agents ({pompistesList.length})</p>
-                      <div className="flex flex-wrap gap-1">
-                        {pompistesList.slice(0, 3).map(p => (
-                          <span key={p.id} className="px-2 py-1 bg-blue-50 text-blue-700 rounded text-[9px] font-bold">{p.name.split(' ')[0]}</span>
-                        ))}
-                        {pompistesList.length > 3 && (
-                          <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-[9px] font-bold">+{pompistesList.length - 3}</span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Cuves */}
-                    {tanksList.length > 0 && (
-                      <div>
-                        <p className="text-[9px] font-bold text-slate-400 uppercase mb-2">Cuves ({tanksList.length})</p>
-                        <div className="flex flex-wrap gap-1">
-                          {tanksList.map(t => (
-                            <span key={t.id} className="px-2 py-1 bg-slate-100 text-slate-700 rounded text-[9px] font-bold">{t.name}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Shift Info */}
-                    <div className="grid grid-cols-2 gap-2 pt-2">
-                      <div className="p-2 bg-slate-50 rounded">
-                        <p className="text-[8px] font-bold text-slate-400 uppercase">Horaires</p>
-                        <p className="text-[10px] font-black text-slate-700">{b.startTime} - {b.endTime}</p>
-                      </div>
-                      {b.pompisteData && (
-                        <div className="p-2 bg-slate-50 rounded">
-                          <p className="text-[8px] font-bold text-slate-400 uppercase">Décalage</p>
-                          <p className={cn("text-[10px] font-black", Object.values(b.pompisteData).some((d: any) => d.decalage < 0) ? "text-red-600" : "text-green-600")}>
-                            {Object.values(b.pompisteData).reduce((acc: number, d: any) => acc + (d.decalage || 0), 0).toLocaleString()} DZD
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-
-                </motion.div>
-              );
-            }) : (
-              <div className="col-span-full">
-                <EmptyState icon={Users} title="Aucune brigade" description="L'historique est vide pour le moment" />
-              </div>
-            )}
-          </div>
-        </motion.div>
-        );
-      })()}
-
       {/* Grille de Brigades — toutes les rôles */}
       {(() => {
         const filteredBrigades = [...brigades].reverse().filter(matchesBrigadeFilters);
@@ -1384,7 +1264,6 @@ const Brigades = () => {
           {filteredBrigades.length > 0 ? (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredBrigades.map((b, index) => {
-                const brigadeChef = brigadeChefs.find(c => c.id === b.chefId);
                 const pompisteList = pompistes.filter(p => b.pompisteIds?.includes(p.id)) || [];
                 const pompisteCount = pompisteList.length;
                 
@@ -1539,39 +1418,43 @@ const Brigades = () => {
                         );
                       })()}
 
-                      {/* Chef Section */}
-                      <div className="mb-4 p-4 bg-gradient-to-r from-blue-50 to-cyan-50 rounded-2xl border border-blue-100">
-                        <p className="text-[9px] font-black text-slate-500 uppercase mb-2 tracking-widest">👨‍💼 Chef de Brigade</p>
-                        <div className="flex items-center gap-3">
-                          <div className="w-11 h-11 bg-blue-500 text-white rounded-xl flex items-center justify-center font-black text-sm flex-shrink-0 shadow-md">
-                            {brigadeChef?.name ? brigadeChef.name[0] : '—'}
-                          </div>
-                          <div className="flex-1">
-                            <p className="font-black text-slate-800 text-sm">{brigadeChef?.name || 'Non assigné'}</p>
-                            <p className="text-[10px] text-slate-500 font-bold">{brigadeChef?.phone || 'N/A'}</p>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Pompistes Section */}
+                      {/* Pompistes Section — piste tenue et pistolets relevés */}
                       <div className="mb-4">
                         <div className="flex items-center justify-between mb-2">
                           <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">⛽ Pompistes ({pompisteCount})</p>
                         </div>
                         {pompisteList.length > 0 ? (
                           <div className="space-y-2">
-                            {pompisteList.map(p => (
-                              <div key={p.id} className="flex items-center gap-2 p-2.5 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border border-green-100 hover:shadow-sm transition-all">
-                                <div className="w-8 h-8 bg-green-500 text-white rounded-lg flex items-center justify-center font-bold text-xs flex-shrink-0">
-                                  {p.name[0]}
+                            {pompisteList.map(p => {
+                              const assignment = (b.pompisteAssignments || []).find(a => a.pompisteId === p.id);
+                              const track = tracks.find(t => t.id === assignment?.trackId);
+                              const heldNozzles = brigadeNozzlesOf(b, p.id);
+                              return (
+                                <div key={p.id} className="p-2.5 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border border-green-100 hover:shadow-sm transition-all">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-8 h-8 bg-green-500 text-white rounded-lg flex items-center justify-center font-bold text-xs flex-shrink-0">
+                                      {p.name[0]}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-xs font-black text-slate-800 truncate">{p.name}</p>
+                                      <p className="text-[9px] text-slate-500">🛣 {track?.name || 'Piste —'}</p>
+                                    </div>
+                                    <span className="text-[10px] font-black text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full whitespace-nowrap">
+                                      ⚡ {heldNozzles.length}
+                                    </span>
+                                  </div>
+                                  {heldNozzles.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 mt-2 pl-10">
+                                      {heldNozzles.map(n => (
+                                        <span key={n.id} className="px-2 py-0.5 bg-white border border-purple-200 rounded text-[9px] font-black text-purple-700">
+                                          {n.name}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-xs font-black text-slate-800 truncate">{p.name}</p>
-                                  <p className="text-[9px] text-slate-500">{p.phone || 'N/A'}</p>
-                                </div>
-                                {p.status === 'Actif' && <span className="text-xs font-bold text-green-600 bg-green-100 px-2 py-0.5 rounded-full whitespace-nowrap">✓ Actif</span>}
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         ) : (
                           <div className="text-center py-3 bg-slate-50 rounded-lg border border-dashed border-slate-200">
@@ -1618,181 +1501,12 @@ const Brigades = () => {
         );
       })()}
 
-      {/* Edit Brigade Modal */}
-      <AnimatePresence>
-        {showEditModal && editingBrigade && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowEditModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col h-auto shadow-2xl border border-blue-200 max-h-[90vh]">
-              {/* Header - Blue gradient matching create modal */}
-              <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white p-6 flex justify-between items-center">
-                <div>
-                  <h3 className="font-black text-sm uppercase tracking-widest">✏️ Modifier Brigade</h3>
-                  <p className="text-[11px] text-blue-200 font-bold mt-1">Mise à jour des informations</p>
-                </div>
-                <button onClick={() => { setShowEditModal(false); setEditingBrigade(null); }} className="hover:bg-blue-700/50 p-2 rounded-lg transition-all"><X className="w-6 h-6" /></button>
-              </div>
-
-              {/* Content */}
-              <div className="p-8 space-y-6 overflow-y-auto custom-scrollbar flex-1">
-                {/* Step 1: Chef & Shift Selection */}
-                <div className="space-y-4">
-                  {/* Chef Selection */}
-                  <div className="space-y-2 p-4 bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl border-2 border-blue-200">
-                    <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">👨‍💼 Chef de Brigade</label>
-                    <select 
-                      className="input-field h-12 font-black italic border-2 border-blue-300 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-300" 
-                      value={chefId} 
-                      onChange={e => setChefId(e.target.value)}
-                    >
-                      <option value="">Sélectionner un chef...</option>
-                      {brigadeChefs.filter(c => c.status === 'Actif').map(c => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Shift Type */}
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">⏰ Type de Shift</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {['Matin', 'Soir', 'Nuit'].map((type: any) => (
-                        <motion.button
-                          key={type}
-                          onClick={() => setShiftType(type)}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                          className={cn("py-3 rounded-xl border-2 transition-all font-black text-xs uppercase",
-                            shiftType === type
-                              ? "border-yellow-400 bg-gradient-to-br from-blue-900/10 to-yellow-400/10 shadow-md"
-                              : "border-slate-200 hover:border-yellow-300 bg-white hover:bg-slate-50"
-                          )}
-                        >
-                          {type === 'Matin' && '🌅'} {type === 'Soir' && '🌆'} {type === 'Nuit' && '🌙'} {type}
-                        </motion.button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Step 2: Date & Times */}
-                <div className="space-y-4 pt-4 border-t border-slate-200">
-                  {/* Date */}
-                  <div className="space-y-2 p-4 bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl border-2 border-blue-200">
-                    <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">📅 Date</label>
-                    <input 
-                      type="date" 
-                      className="input-field h-12 font-black italic border-2 border-blue-300 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-300" 
-                      value={shiftDate}
-                      onChange={e => setShiftDate(e.target.value)}
-                    />
-                  </div>
-
-                  {/* Horaires */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2 p-4 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border-2 border-green-200">
-                      <label className="text-[10px] font-black text-green-700 uppercase tracking-widest pl-1">🕐 Heure de Début</label>
-                      <input 
-                        type="time" 
-                        className="input-field h-12 font-black italic border-2 border-green-300 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-300" 
-                        value={startTime}
-                        onChange={e => setStartTime(e.target.value)}
-                      />
-                    </div>
-                    <div className="space-y-2 p-4 bg-gradient-to-br from-red-50 to-pink-50 rounded-2xl border-2 border-red-200">
-                      <label className="text-[10px] font-black text-red-700 uppercase tracking-widest pl-1">🕕 Heure de Fin</label>
-                      <input 
-                        type="time" 
-                        className="input-field h-12 font-black italic border-2 border-red-300 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-300" 
-                        value={endTime}
-                        onChange={e => setEndTime(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Pompistes Selection */}
-                {chefId && (
-                  <div className="space-y-4 pt-4 border-t border-slate-200">
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest">👥 Pompistes de {brigadeChefs.find(c => c.id === chefId)?.name}</label>
-                      <span className="text-xs font-black text-white bg-gradient-to-r from-blue-900 to-blue-800 px-3 py-1 rounded-full">{selectedPompisteIds.length} sélectionné(s)</span>
-                    </div>
-                    <div className="space-y-2">
-                      {(() => {
-                        const chef = brigadeChefs.find(c => c.id === chefId);
-                        const chefPompisteIds = chef?.pompisteIds || [];
-                        const chefPompistes = pompistes.filter(p => chefPompisteIds.includes(p.id) && p.status === 'Actif');
-                        
-                        if (chefPompistes.length === 0) {
-                          return (
-                            <div className="p-4 text-center bg-slate-50 rounded-xl border-2 border-dashed border-slate-300">
-                              <p className="text-sm text-slate-400 italic">Aucun pompiste assigné</p>
-                            </div>
-                          );
-                        }
-
-                        return chefPompistes.map((p) => (
-                          <motion.button
-                            key={p.id}
-                            onClick={() => setSelectedPompisteIds(prev => prev.includes(p.id) ? prev.filter(id => id !== p.id) : [...prev, p.id])}
-                            whileHover={{ scale: 1.01 }}
-                            className={cn(
-                              "p-3 rounded-xl border-2 transition-all flex items-center justify-between",
-                              selectedPompisteIds.includes(p.id)
-                                ? "border-yellow-400 bg-gradient-to-br from-yellow-50 to-yellow-100 shadow-md"
-                                : "border-slate-200 hover:border-yellow-300 bg-white hover:bg-yellow-50"
-                            )}
-                          >
-                            <div className="flex items-center gap-3 flex-1">
-                              <div className={cn("w-8 h-8 rounded-full flex items-center justify-center font-black text-xs text-white flex-shrink-0", selectedPompisteIds.includes(p.id) ? "bg-gradient-to-br from-yellow-500 to-yellow-600" : "bg-gradient-to-br from-slate-600 to-slate-700")}>
-                                {p.name[0]}
-                              </div>
-                              <div className="text-left">
-                                <p className={cn("text-xs font-black", selectedPompisteIds.includes(p.id) ? "text-yellow-900" : "text-slate-800")}>{p.name}</p>
-                                <p className="text-[9px] text-slate-500">Piste: {p.trackId || 'N/A'}</p>
-                              </div>
-                            </div>
-                            <div className={cn("w-4 h-4 rounded-md border-2 flex items-center justify-center transition-all flex-shrink-0", selectedPompisteIds.includes(p.id) ? "bg-gradient-to-r from-yellow-400 to-yellow-500 border-yellow-500" : "border-slate-300 bg-white")}>
-                              {selectedPompisteIds.includes(p.id) && <Check className="w-2 h-2 text-yellow-600" />}
-                            </div>
-                          </motion.button>
-                        ));
-                      })()}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Footer */}
-              <div className="p-6 bg-gradient-to-r from-slate-50 to-blue-50 border-t border-slate-200 flex gap-3">
-                <button
-                  onClick={() => { setShowEditModal(false); setEditingBrigade(null); }}
-                  className="flex-[1] py-3 px-4 bg-white text-slate-700 rounded-xl font-black text-xs uppercase hover:bg-slate-100 transition-all border-2 border-slate-200 hover:border-slate-300"
-                >
-                  ✕ Annuler
-                </button>
-                <button
-                  onClick={handleSaveEditBrigade}
-                  className="flex-[2] bg-gradient-to-r from-blue-900 to-blue-800 hover:shadow-lg text-white font-black uppercase tracking-widest rounded-xl py-3 transition-all transform hover:-translate-y-0.5 text-xs flex items-center justify-center gap-2 shadow-lg shadow-blue-900/30 border border-blue-700"
-                >
-                  ✓ Enregistrer
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
       {/* Creation Modal */}
       <AnimatePresence>
         {showModal && (() => {
-          const chef = brigadeChefs.find(c => c.id === chefId);
-          const chefPompisteIds = chef?.pompisteIds || [];
-          const chefPompistes = pompistes.filter(p => chefPompisteIds.includes(p.id) && p.status === 'Actif');
-          const presentCount = chefPompisteIds.filter(pid => (pompistePresence[pid] || 'present') === 'present').length;
-          const absentCount = chefPompisteIds.filter(pid => pompistePresence[pid] === 'absent').length;
-          const anyAbsent = absentCount > 0;
+          const activePompistes = pompistes.filter(p => p.status === 'Actif' || wizPompisteIds.includes(p.id));
+          const presentCount = wizPompisteIds.filter(pid => pompistePresence[pid] === 'present').length;
+          const absentCount = wizPompisteIds.filter(pid => pompistePresence[pid] === 'absent').length;
 
           // Auto-fill from last brigade
           const lastBrigade = [...brigades]
@@ -1800,33 +1514,38 @@ const Brigades = () => {
             .sort((a, b) => new Date(b.endTimestamp || b.date).getTime() - new Date(a.endTimestamp || a.date).getTime())[0];
 
           const STEPS = [
-            { num: 1, label: 'Chef',        icon: UserCog },
-            { num: 2, label: 'Pompistes',   icon: Users },
-            { num: 3, label: 'Planning',    icon: Calendar },
-            { num: 4, label: 'Début',       icon: Database },
-            { num: 5, label: 'Fin',         icon: Droplets },
-            { num: 6, label: 'Comparaison', icon: TrendingUp },
-            { num: 7, label: 'Comptabilité', icon: DollarSign },
+            { num: 1, label: 'Pompistes',   icon: Users },
+            { num: 2, label: 'Planning',    icon: Calendar },
+            { num: 3, label: 'Début',       icon: Database },
+            { num: 4, label: 'Fin',         icon: Droplets },
+            { num: 5, label: 'Comparaison', icon: TrendingUp },
+            { num: 6, label: 'Comptabilité', icon: DollarSign },
           ];
 
-          // Step 2 piste validation: every present pompiste needs a piste & no two may share one
+          // ── Validation de l'étape 1 ────────────────────────────────────────
+          // Chaque pompiste présent tient une piste (jamais partagée) et au moins
+          // un pistolet, et deux pompistes ne peuvent pas tenir le même pistolet.
           const presentTrackUsage: Record<string, number> = {};
           presentAssignments.forEach(a => { if (a.trackId) presentTrackUsage[a.trackId] = (presentTrackUsage[a.trackId] || 0) + 1; });
-          const step2MissingPiste = presentAssignments.some(a => !a.trackId);
-          const step2DuplicatePiste = Object.values(presentTrackUsage).some(n => n > 1);
-          const step2Valid = presentAssignments.length > 0 && !step2MissingPiste && !step2DuplicatePiste;
+          const nozzleUsage: Record<string, number> = {};
+          presentAssignments.forEach(a => (a.nozzleIds || []).forEach(nid => { nozzleUsage[nid] = (nozzleUsage[nid] || 0) + 1; }));
+          const step1MissingPiste = presentAssignments.some(a => !a.trackId);
+          const step1DuplicatePiste = Object.values(presentTrackUsage).some(n => n > 1);
+          const step1MissingNozzles = presentAssignments.some(a => (a.nozzleIds || []).length === 0);
+          const step1DuplicateNozzle = Object.values(nozzleUsage).some(n => n > 1);
+          const step1Valid = presentAssignments.length > 0 && !step1MissingPiste
+            && !step1DuplicatePiste && !step1MissingNozzles && !step1DuplicateNozzle;
 
           // Un pompiste est « servi » soit par une saisie d'espèces, soit par une
           // feuille de versement activée : les deux valent déclaration du montant.
           const allPaymentsFilled = presentAssignments.length > 0 && presentAssignments.every(
             a => pompistePayments[a.pompisteId] !== undefined || cashSheetOf(a.pompisteId).active);
-          const canGoNext = step === 1 ? !!chefId :
-                            step === 2 ? step2Valid :
-                            step === 3 ? (!!startDate && !!endDate) :
-                            step === 4 ? true :
-                            step === 5 ? !hasStep5Errors :
-                            step === 6 ? true :
-                            step === 7 ? allPaymentsFilled : true;
+          const canGoNext = step === 1 ? step1Valid :
+                            step === 2 ? (!!startDate && !!endDate) :
+                            step === 3 ? true :
+                            step === 4 ? !hasStep5Errors :
+                            step === 5 ? true :
+                            step === 6 ? allPaymentsFilled : true;
 
           return (
             <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -1876,158 +1595,207 @@ const Brigades = () => {
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
 
-                  {/* STEP 1: Chef */}
+                  {/* STEP 1: Pompistes — sélection, piste et pistolets tenus */}
                   {step === 1 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
-                      <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">📋 Chefs de Brigade Disponibles</label>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {brigadeChefs.filter(c => c.status === 'Actif' || c.status === 'En service').map(c => (
-                          <motion.button
-                            key={c.id}
-                            onClick={() => { setChefId(c.id); setPompistePresence({}); }}
-                            whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                            className={cn("p-4 rounded-2xl border-2 transition-all text-left", chefId === c.id ? "border-yellow-400 bg-gradient-to-br from-yellow-50 to-yellow-100 shadow-md" : "border-slate-200 hover:border-yellow-400 bg-white hover:bg-slate-50")}
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className={cn("w-11 h-11 rounded-full flex items-center justify-center font-black text-lg flex-shrink-0", chefId === c.id ? "bg-gradient-to-br from-yellow-500 to-yellow-600 text-white" : "bg-gradient-to-br from-blue-900 to-blue-800 text-yellow-300")}>
-                                {c.name[0]}
-                              </div>
-                              <div className="flex-1">
-                                <p className={cn("text-sm font-black", chefId === c.id ? "text-yellow-900" : "text-slate-800")}>{c.name}</p>
-                                <p className="text-[10px] text-slate-500">Tél: {c.phone || 'N/A'}</p>
-                                <span className="text-[9px] font-bold px-2 py-0.5 bg-green-100 text-green-700 rounded-full inline-block mt-1">✓ {c.status}</span>
-                              </div>
-                              {chefId === c.id && <CheckCircle className="w-5 h-5 text-yellow-500 flex-shrink-0" />}
-                            </div>
-                          </motion.button>
-                        ))}
-                      </div>
-                      {brigadeChefs.filter(c => c.status === 'Actif' || c.status === 'En service').length === 0 && (
-                        <div className="p-6 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
-                          <p className="text-sm text-slate-400 italic">Aucun chef disponible</p>
-                        </div>
-                      )}
-                    </motion.div>
-                  )}
-
-                  {/* STEP 2: Pompistes — Présent/Absent + Piste override */}
-                  {step === 2 && (
-                    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
                       <div className="flex items-center justify-between">
-                        <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest">👥 Pompistes de {chef?.name}</label>
+                        <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest">👥 Pompistes & Pistolets</label>
                         <div className="flex gap-2 text-[10px] font-black">
                           <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full">{presentCount} présent(s)</span>
                           {absentCount > 0 && <span className="px-2 py-1 bg-red-100 text-red-700 rounded-full">{absentCount} absent(s)</span>}
                         </div>
                       </div>
 
-                      {!step2Valid && (
+                      <div className="p-3 bg-blue-50 rounded-xl border border-blue-200 text-[11px] font-bold text-blue-700">
+                        ℹ️ Composez la brigade : marquez chaque pompiste <strong>Présent</strong> (ou <strong>Absent</strong> pour lui enregistrer une absence),
+                        donnez-lui sa piste, puis ajustez ses pistolets. Ceux de la piste sont proposés d'office — retirez-en ou ajoutez-en à volonté.
+                        Un second clic sur Présent / Absent le sort de la brigade.
+                      </div>
+
+                      {!step1Valid && (
                         <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-[11px] font-bold text-red-700">
                           {presentAssignments.length === 0
-                            ? "⚠️ Au moins un pompiste présent (avec une piste) est requis pour continuer."
-                            : step2MissingPiste
+                            ? "⚠️ Sélectionnez au moins un pompiste présent pour continuer."
+                            : step1MissingPiste
                               ? "⚠️ Chaque pompiste présent doit avoir une piste assignée."
-                              : "⚠️ Deux pompistes ne peuvent pas partager la même piste."}
+                              : step1DuplicatePiste
+                                ? "⚠️ Deux pompistes ne peuvent pas partager la même piste."
+                                : step1MissingNozzles
+                                  ? "⚠️ Chaque pompiste présent doit tenir au moins un pistolet."
+                                  : "⚠️ Un même pistolet ne peut pas être tenu par deux pompistes."}
                         </div>
                       )}
 
-                      {chefPompistes.length === 0 ? (
+                      {activePompistes.length === 0 ? (
                         <div className="p-6 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
-                          <p className="text-sm text-slate-400 italic">Aucun pompiste assigné à ce chef</p>
+                          <p className="text-sm text-slate-400 italic">Aucun pompiste actif — créez-en depuis la page Pompistes.</p>
                         </div>
                       ) : (
                         <div className="space-y-3">
-                          {chefPompistes.map(p => {
-                            const presence = pompistePresence[p.id] || 'present';
+                          {activePompistes.map(p => {
+                            const presence = pompistePresence[p.id];
+                            const inBrigade = !!presence;
+                            const isPresent = presence === 'present';
                             const isAbsent = presence === 'absent';
                             const defaultTrack = tracks.find(t => t.id === p.trackId);
+                            const effTrack = trackOfPompiste(p.id);
+                            const myNozzleIds = isPresent ? nozzlesOfPompiste(p.id) : [];
+                            const trackNozzles = activeNozzlesOfTrack(effTrack);
+                            // Pistolets pris hors de sa piste — listés à part pour rester lisible.
+                            const extraNozzles = pumpNozzles.filter(n => myNozzleIds.includes(n.id) && !trackNozzles.some(tn => tn.id === n.id));
+                            // Pistolets encore libres : ceux que personne d'autre ne tient.
+                            const addableNozzles = pumpNozzles.filter(n =>
+                              n.status === 'Actif' && !myNozzleIds.includes(n.id)
+                              && !presentAssignments.some(a => a.pompisteId !== p.id && (a.nozzleIds || []).includes(n.id)));
+                            const missingPiste = isPresent && !effTrack;
+                            const duplicatePiste = isPresent && !!effTrack && presentTrackUsage[effTrack] > 1;
+                            const setPresence = (value: 'present' | 'absent') => setPompistePresence(prev => {
+                              const next = { ...prev };
+                              if (next[p.id] === value) delete next[p.id]; else next[p.id] = value;
+                              return next;
+                            });
                             return (
-                              <div key={p.id} className={cn("p-4 rounded-2xl border-2 transition-all", isAbsent ? "border-red-200 bg-red-50/50 opacity-75" : "border-slate-200 bg-white")}>
-                                <div className="flex items-center gap-3 mb-3">
-                                  <div className={cn("w-10 h-10 rounded-full flex items-center justify-center font-black text-white flex-shrink-0", isAbsent ? "bg-red-400" : "bg-gradient-to-br from-blue-700 to-blue-900")}>
+                              <div key={p.id} className={cn(
+                                "p-4 rounded-2xl border-2 transition-all",
+                                !inBrigade ? "border-slate-200 bg-slate-50/70"
+                                  : isAbsent ? "border-red-200 bg-red-50/50 opacity-80"
+                                  : "border-green-200 bg-white",
+                              )}>
+                                <div className="flex items-center gap-3">
+                                  <div className={cn(
+                                    "w-10 h-10 rounded-full flex items-center justify-center font-black text-white flex-shrink-0",
+                                    !inBrigade ? "bg-slate-300" : isAbsent ? "bg-red-400" : "bg-gradient-to-br from-blue-700 to-blue-900",
+                                  )}>
                                     {p.name[0]}
                                   </div>
-                                  <div className="flex-1">
-                                    <p className="text-sm font-black text-slate-800">{p.name}</p>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-black text-slate-800 truncate">{p.name}</p>
                                     <p className="text-[10px] text-slate-500">Piste par défaut: {defaultTrack?.name || 'N/A'}</p>
                                   </div>
-                                  {/* Présent/Absent toggle */}
-                                  <div className="flex gap-1">
+                                  <div className="flex gap-1 flex-shrink-0">
                                     <button
-                                      onClick={() => setPompistePresence(prev => ({ ...prev, [p.id]: 'present' }))}
-                                      className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all", presence === 'present' ? "bg-green-500 text-white shadow-sm" : "bg-slate-100 text-slate-400 hover:bg-green-100")}
+                                      onClick={() => setPresence('present')}
+                                      className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all", isPresent ? "bg-green-500 text-white shadow-sm" : "bg-slate-100 text-slate-400 hover:bg-green-100")}
                                     >Présent</button>
                                     <button
-                                      onClick={() => setPompistePresence(prev => ({ ...prev, [p.id]: 'absent' }))}
-                                      className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all", presence === 'absent' ? "bg-red-500 text-white shadow-sm" : "bg-slate-100 text-slate-400 hover:bg-red-100")}
+                                      onClick={() => setPresence('absent')}
+                                      className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all", isAbsent ? "bg-red-500 text-white shadow-sm" : "bg-slate-100 text-slate-400 hover:bg-red-100")}
                                     >Absent</button>
                                   </div>
                                 </div>
-                                {/* Piste override (only if present) */}
-                                {!isAbsent && (() => {
-                                  const effTrack = pisteOverrides[p.id] || p.trackId || '';
-                                  const missing = !effTrack;
-                                  const duplicate = !!effTrack && presentTrackUsage[effTrack] > 1;
-                                  return (
-                                  <div className="mt-2">
-                                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Piste pour cette brigade</label>
-                                    <select
-                                      value={effTrack}
-                                      onChange={e => setPisteOverrides(prev => ({ ...prev, [p.id]: e.target.value }))}
-                                      className={cn("w-full px-3 py-2 rounded-xl text-sm font-bold outline-none focus:ring-2", (missing || duplicate) ? "bg-red-50 border-2 border-red-400 focus:ring-red-300" : "bg-slate-50 border border-slate-200 focus:ring-blue-400")}
-                                    >
-                                      <option value="">— Sélectionner une piste —</option>
-                                      {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                    </select>
-                                    {missing && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Veuillez sélectionner une piste pour ce pompiste</p>}
-                                    {duplicate && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Cette piste est déjà assignée à un autre pompiste</p>}
+
+                                {isPresent && (
+                                  <div className="mt-3 space-y-3">
+                                    {/* Piste tenue pendant cette brigade */}
+                                    <div>
+                                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Piste pour cette brigade</label>
+                                      <select
+                                        value={effTrack}
+                                        onChange={e => { setPisteOverrides(prev => ({ ...prev, [p.id]: e.target.value })); resetNozzlesForPompiste(p.id); }}
+                                        className={cn("w-full px-3 py-2 rounded-xl text-sm font-bold outline-none focus:ring-2", (missingPiste || duplicatePiste) ? "bg-red-50 border-2 border-red-400 focus:ring-red-300" : "bg-slate-50 border border-slate-200 focus:ring-blue-400")}
+                                      >
+                                        <option value="">— Sélectionner une piste —</option>
+                                        {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                      </select>
+                                      {missingPiste && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Veuillez sélectionner une piste pour ce pompiste</p>}
+                                      {duplicatePiste && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Cette piste est déjà assignée à un autre pompiste</p>}
+                                    </div>
+
+                                    {/* Pistolets tenus — proposés depuis la piste, ajustables */}
+                                    <div>
+                                      <div className="flex items-center justify-between mb-1">
+                                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                                          Pistolets tenus ({myNozzleIds.length})
+                                        </label>
+                                        {nozzlesTouched[p.id] && (
+                                          <button onClick={() => resetNozzlesForPompiste(p.id)}
+                                            className="text-[9px] font-black uppercase text-blue-600 hover:underline">
+                                            ↺ Repartir de la piste
+                                          </button>
+                                        )}
+                                      </div>
+
+                                      {!effTrack ? (
+                                        <p className="text-[10px] text-slate-400 font-bold italic">Sélectionnez d'abord une piste.</p>
+                                      ) : (
+                                        <div className="space-y-2">
+                                          {/* Pistolets de la piste : cochés = tenus */}
+                                          {trackNozzles.length === 0 && extraNozzles.length === 0 ? (
+                                            <p className="text-[10px] text-red-600 font-bold">⚠️ Aucun pistolet actif sur cette piste — ajoutez-en un ci-dessous.</p>
+                                          ) : (
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                              {[...trackNozzles, ...extraNozzles].map(n => {
+                                                const held = myNozzleIds.includes(n.id);
+                                                const takenBy = presentAssignments.find(a => a.pompisteId !== p.id && (a.nozzleIds || []).includes(n.id));
+                                                const takenByName = takenBy ? (pompistes.find(x => x.id === takenBy.pompisteId)?.name || 'un autre pompiste') : '';
+                                                const isExtra = extraNozzles.some(x => x.id === n.id);
+                                                const pump = pumps.find(pu => pu.id === n.pumpId);
+                                                return (
+                                                  <button
+                                                    key={n.id}
+                                                    onClick={() => toggleNozzleForPompiste(p.id, n.id)}
+                                                    className={cn(
+                                                      "flex items-center gap-2 p-2.5 rounded-xl border-2 text-left transition-all",
+                                                      takenBy ? "border-red-300 bg-red-50"
+                                                        : held ? "border-purple-400 bg-purple-50"
+                                                        : "border-slate-200 bg-white hover:border-purple-300",
+                                                    )}
+                                                  >
+                                                    <div className={cn(
+                                                      "w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all",
+                                                      held ? "bg-purple-500 border-purple-500" : "border-slate-300 bg-white",
+                                                    )}>
+                                                      {held && <Check className="w-3 h-3 text-white" />}
+                                                    </div>
+                                                    <div className="min-w-0 flex-1">
+                                                      <p className="text-[11px] font-black text-slate-800 truncate">⚡ {n.name}</p>
+                                                      <p className="text-[9px] text-slate-500 truncate">
+                                                        {pump?.name || '—'} · {pump?.type || '—'}
+                                                        {isExtra && <span className="text-orange-600 font-black"> · hors piste</span>}
+                                                      </p>
+                                                      {takenBy && <p className="text-[9px] text-red-600 font-black">Déjà tenu par {takenByName}</p>}
+                                                    </div>
+                                                  </button>
+                                                );
+                                              })}
+                                            </div>
+                                          )}
+
+                                          {/* Ajouter un pistolet d'une autre piste */}
+                                          {nozzlePickerFor === p.id ? (
+                                            <select
+                                              autoFocus
+                                              value=""
+                                              onChange={e => { if (e.target.value) toggleNozzleForPompiste(p.id, e.target.value); setNozzlePickerFor(null); }}
+                                              onBlur={() => setNozzlePickerFor(null)}
+                                              className="w-full px-3 py-2 rounded-xl text-sm font-bold bg-white border-2 border-purple-300 outline-none focus:ring-2 focus:ring-purple-300"
+                                            >
+                                              <option value="">— Choisir un pistolet à ajouter —</option>
+                                              {addableNozzles.map(n => <option key={n.id} value={n.id}>{nozzleLabel(n)}</option>)}
+                                            </select>
+                                          ) : (
+                                            <button
+                                              onClick={() => setNozzlePickerFor(p.id)}
+                                              disabled={addableNozzles.length === 0}
+                                              className="w-full py-2 rounded-xl border-2 border-dashed border-purple-300 text-[10px] font-black uppercase tracking-widest text-purple-600 hover:bg-purple-50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                                            >
+                                              + Ajouter un pistolet
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
-                                  );
-                                })()}
+                                )}
                               </div>
                             );
                           })}
                         </div>
                       )}
-
-                      {/* Chef as pompiste option */}
-                      {anyAbsent && (
-                        <div className="p-4 bg-blue-50 rounded-2xl border-2 border-blue-200">
-                          <label className="flex items-center gap-3 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={chefAsPompiste}
-                              onChange={e => { setChefAsPompiste(e.target.checked); if (!e.target.checked) setChefPisteId(''); }}
-                              className="w-4 h-4 accent-blue-700"
-                            />
-                            <span className="text-sm font-black text-blue-900">Le chef de brigade travaille comme pompiste</span>
-                          </label>
-                          {chefAsPompiste && (() => {
-                            const missing = !chefPisteId;
-                            const duplicate = !!chefPisteId && presentTrackUsage[chefPisteId] > 1;
-                            return (
-                            <div className="mt-3">
-                              <label className="text-[9px] font-black text-blue-700 uppercase tracking-widest mb-1 block">Piste du chef</label>
-                              <select
-                                value={chefPisteId}
-                                onChange={e => setChefPisteId(e.target.value)}
-                                className={cn("w-full px-3 py-2 rounded-xl text-sm font-bold outline-none focus:ring-2", (missing || duplicate) ? "bg-red-50 border-2 border-red-400 focus:ring-red-300" : "bg-white border border-blue-300 focus:ring-blue-400")}
-                              >
-                                <option value="">Sélectionner une piste...</option>
-                                {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                              </select>
-                              {missing && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Veuillez sélectionner une piste pour le chef</p>}
-                              {duplicate && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Cette piste est déjà assignée à un autre pompiste</p>}
-                            </div>
-                            );
-                          })()}
-                        </div>
-                      )}
                     </motion.div>
                   )}
-
-                  {/* STEP 3: Planning — Start/End datetime */}
-                  {step === 3 && (
+                  {/* STEP 2: Planning — Start/End datetime */}
+                  {step === 2 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
                       {/* Start */}
                       <div className="space-y-3 p-4 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border-2 border-green-200">
@@ -2067,8 +1835,8 @@ const Brigades = () => {
                     </motion.div>
                   )}
 
-                  {/* STEP 4: Niveaux actuels (read-only) */}
-                  {step === 4 && (
+                  {/* STEP 3: Niveaux actuels (read-only) */}
+                  {step === 3 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
                       <div className="p-3 bg-blue-50 rounded-xl border border-blue-200 text-[11px] font-bold text-blue-700">
                         ℹ️ Ces valeurs sont issues du système. Elles seront utilisées comme référence de début de brigade.
@@ -2104,47 +1872,44 @@ const Brigades = () => {
                         })}
                       </div>
 
-                      {/* Section B — Nozzles grouped track → pump → nozzle
-                          (uniquement les pistes tenues par un pompiste présent) */}
+                      {/* Section B — Index de départ, groupés par POMPISTE :
+                          exactement les pistolets qui lui ont été attribués. */}
                       <div className="space-y-3">
-                        <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Index actuels des pistolets des pistes en service</h4>
-                        {serviceTracks.map(track => {
-                          const trackPumps = pumps.filter(p => p.trackId === track.id);
-                          if (trackPumps.length === 0) return null;
-                          const holder = trackHolderName(track.id);
-                          return (
-                            <div key={track.id} className="p-3 rounded-2xl border-2 border-slate-100 bg-slate-50/50">
-                              <p className="text-[10px] font-black text-slate-600 uppercase mb-2">🛣 {track.name}{holder && <span className="text-slate-400 normal-case"> · {holder}</span>}</p>
-                              <div className="space-y-2">
-                                {trackPumps.map(pump => {
-                                  const nozzles = pumpNozzles.filter(n => n.pumpId === pump.id);
-                                  return nozzles.map(n => (
-                                    <div key={n.id} className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-slate-100">
-                                      <div className="flex items-center gap-2">
-                                        <span className={cn("w-2 h-2 rounded-full", n.status === 'Actif' ? 'bg-green-400' : 'bg-slate-300')} />
-                                        <div>
-                                          <p className="text-xs font-black text-slate-800">{n.name}</p>
-                                          <p className="text-[9px] text-slate-400">{pump.name}</p>
-                                        </div>
-                                      </div>
-                                      <div className="text-right">
-                                        <p className="text-sm font-black text-blue-700 tabular-nums">{startNozzleIdx(n).toLocaleString('fr-FR')}</p>
-                                        <span className={cn("text-[8px] font-black px-1.5 py-0.5 rounded-full uppercase", n.status === 'Actif' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400')}>{n.status}</span>
+                        <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Index actuels des pistolets attribués</h4>
+                        {wizNozzleGroups.map(group => (
+                          <div key={group.pompisteId} className="p-3 rounded-2xl border-2 border-slate-100 bg-slate-50/50">
+                            <p className="text-[10px] font-black text-slate-600 uppercase mb-2">
+                              👤 {group.pompisteName}<span className="text-slate-400 normal-case"> · 🛣 {group.trackName} · {group.nozzles.length} pistolet(s)</span>
+                            </p>
+                            <div className="space-y-2">
+                              {group.nozzles.map(n => {
+                                const pump = pumps.find(p => p.id === n.pumpId);
+                                return (
+                                  <div key={n.id} className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-slate-100">
+                                    <div className="flex items-center gap-2">
+                                      <span className={cn("w-2 h-2 rounded-full", n.status === 'Actif' ? 'bg-green-400' : 'bg-slate-300')} />
+                                      <div>
+                                        <p className="text-xs font-black text-slate-800">{n.name}</p>
+                                        <p className="text-[9px] text-slate-400">{pump?.name || '—'}</p>
                                       </div>
                                     </div>
-                                  ));
-                                })}
-                              </div>
+                                    <div className="text-right">
+                                      <p className="text-sm font-black text-blue-700 tabular-nums">{startNozzleIdx(n).toLocaleString('fr-FR')}</p>
+                                      <span className={cn("text-[8px] font-black px-1.5 py-0.5 rounded-full uppercase", n.status === 'Actif' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400')}>{n.status}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
-                          );
-                        })}
+                          </div>
+                        ))}
                         {renderOffServiceTracksNote()}
                       </div>
                     </motion.div>
                   )}
 
-                  {/* STEP 5: Niveaux de fin (input + validation) */}
-                  {step === 5 && (
+                  {/* STEP 4: Niveaux de fin (input + validation) */}
+                  {step === 4 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
                       {/* Relevé des cuves : chaque cuve s'active INDÉPENDAMMENT.
                           Toutes inactives par défaut → seuls les index de fin des
@@ -2268,27 +2033,26 @@ const Brigades = () => {
                       <div className="space-y-3">
                         <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Index de fin des pistolets — pompistes présents <span className="text-red-500">*</span></h4>
                         <p className="text-[10px] font-bold text-slate-400">Un pistolet marqué <span className="text-red-500">en panne</span> n'a rien débité : son index de fin reste égal à son index de début et sa saisie n'est plus demandée.</p>
-                        {serviceTracks.length === 0 && (
+                        {wizNozzleGroups.length === 0 && (
                           <div className="p-4 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
-                            <p className="text-sm text-slate-400 italic font-bold">Aucune piste en service — revenez à l'étape 2 pour marquer au moins un pompiste présent.</p>
+                            <p className="text-sm text-slate-400 italic font-bold">Aucun pistolet en service — revenez à l'étape 1 pour attribuer des pistolets à au moins un pompiste.</p>
                           </div>
                         )}
-                        {serviceTracks.map(track => {
-                          const trackPumps = pumps.filter(p => p.trackId === track.id);
-                          const trackActiveNozzles = serviceNozzles.filter(n => trackPumps.some(p => p.id === n.pumpId));
-                          if (trackActiveNozzles.length === 0) return null;
-                          const holder = trackHolderName(track.id);
-                          const trackMissing = trackActiveNozzles.filter(n => !isBrokenNozzle(n.id) && (wizEndNozzleIndices[n.id] === undefined || wizEndNozzleIndices[n.id] === null)).length;
+                        {wizNozzleGroups.map(group => {
+                          const groupMissing = group.nozzles.filter(n => !isBrokenNozzle(n.id) && (wizEndNozzleIndices[n.id] === undefined || wizEndNozzleIndices[n.id] === null)).length;
                           return (
-                            <div key={track.id} className={cn("p-3 rounded-2xl border-2", trackMissing > 0 ? "border-amber-200 bg-amber-50/40" : "border-emerald-100 bg-emerald-50/30")}>
+                            <div key={group.pompisteId} className={cn("p-3 rounded-2xl border-2", groupMissing > 0 ? "border-amber-200 bg-amber-50/40" : "border-emerald-100 bg-emerald-50/30")}>
                               <div className="flex items-center justify-between gap-3 mb-2">
-                                <p className="text-[10px] font-black text-slate-600 uppercase">🛣 {track.name}{holder && <span className="text-blue-700 normal-case"> · {holder}</span>}</p>
-                                <span className={cn("text-[9px] font-black px-2 py-0.5 rounded-full uppercase", trackMissing > 0 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700")}>
-                                  {trackMissing > 0 ? `${trackMissing} index manquant(s)` : '✓ Complet'}
+                                <p className="text-[10px] font-black text-slate-600 uppercase">
+                                  👤 {group.pompisteName}<span className="text-blue-700 normal-case"> · 🛣 {group.trackName}</span>
+                                </p>
+                                <span className={cn("text-[9px] font-black px-2 py-0.5 rounded-full uppercase", groupMissing > 0 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700")}>
+                                  {groupMissing > 0 ? `${groupMissing} index manquant(s)` : '✓ Complet'}
                                 </span>
                               </div>
                               <div className="space-y-2">
-                                {trackPumps.map(pump => serviceNozzles.filter(n => n.pumpId === pump.id).map(n => {
+                                {group.nozzles.map(n => {
+                                  const pump = pumps.find(p => p.id === n.pumpId);
                                   const broken = isBrokenNozzle(n.id);
                                   const err = nozzleEndError(n.id);
                                   const val = wizEndNozzleIndices[n.id];
@@ -2308,7 +2072,7 @@ const Brigades = () => {
                                             {n.name}
                                           </motion.p>
                                           <p className="text-[9px] text-slate-400">
-                                            {pump.name} · Début: {startIdx.toLocaleString('fr-FR')}
+                                            {pump?.name || '—'} · Début: {startIdx.toLocaleString('fr-FR')}
                                             {broken
                                               ? <span className="text-red-500 font-black"> · En panne — aucun débit</span>
                                               : (!missing && !err && <span className="text-blue-600 font-black"> · Débité: {diff.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L</span>)}
@@ -2347,7 +2111,7 @@ const Brigades = () => {
                                       </AnimatePresence>
                                     </div>
                                   );
-                                }))}
+                                })}
                               </div>
                             </div>
                           );
@@ -2357,8 +2121,8 @@ const Brigades = () => {
                     </motion.div>
                   )}
 
-                  {/* STEP 6: Comparaison & Alertes */}
-                  {step === 6 && cuvesActive && (
+                  {/* STEP 5: Comparaison & Alertes */}
+                  {step === 5 && cuvesActive && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
                       <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-[11px] font-bold text-slate-600">
                         Ces alertes seront enregistrées dans le tableau de bord administrateur.
@@ -2409,65 +2173,62 @@ const Brigades = () => {
                     </motion.div>
                   )}
 
-                  {/* STEP 6 : écart d'index par pistolet — toujours affiché, car
+                  {/* STEP 5 : écart d'index par pistolet — toujours affiché, car
                       c'est la mesure de base de la brigade, que des cuves aient
                       été relevées ou non. */}
-                  {step === 6 && (
+                  {step === 5 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
                       <div className={cn("p-3 rounded-xl border text-[11px] font-bold", cuvesActive ? "bg-slate-50 border-slate-200 text-slate-600" : "bg-amber-50 border-amber-200 text-amber-700")}>
                         {cuvesActive
                           ? `🛢 ${activeTankIds.length} cuve(s) relevée(s) — les autres sont déduites de l'écart d'index (début → fin) de leurs pistolets.`
                           : "🛢 Aucune cuve relevée — comparaison uniquement sur l'écart d'index (début → fin) de chaque pistolet."}
                       </div>
-                      {serviceTracks.map(track => {
-                        const trackPumps = pumps.filter(p => p.trackId === track.id);
-                        const trackNozzles = serviceNozzles.filter(n => trackPumps.some(p => p.id === n.pumpId));
-                        if (trackNozzles.length === 0) return null;
-                        const holder = trackHolderName(track.id);
-                        return (
-                          <div key={track.id} className="rounded-2xl border-2 border-slate-100 overflow-hidden">
-                            <div className="px-4 py-2 bg-slate-50 text-[10px] font-black text-slate-600 uppercase">🛣 {track.name}{holder && <span className="text-blue-700 normal-case"> · {holder}</span>}</div>
-                            <table className="w-full text-left text-[11px]">
-                              <thead className="bg-white text-slate-400 uppercase text-[9px] font-black border-b border-slate-100">
-                                <tr>
-                                  <th className="px-3 py-2">Pistolet</th>
-                                  <th className="px-3 py-2 text-right">Index début</th>
-                                  <th className="px-3 py-2 text-right">Index fin</th>
-                                  <th className="px-3 py-2 text-right">Écart (L)</th>
-                                  <th className="px-3 py-2 text-right">Montant</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-50">
-                                {trackPumps.map(pump => serviceNozzles.filter(n => n.pumpId === pump.id).map(n => {
-                                  const broken = isBrokenNozzle(n.id);
-                                  const startIdx = startNozzleIdx(n);
-                                  const endIdx = endIdxFor(n);
-                                  const diff = Math.max(0, endIdx - startIdx);
-                                  const price = settings.fuelPrices[(pump.type || 'DIESEL') as Tank['type']] || 0;
-                                  return (
-                                    <tr key={n.id} className={cn("font-bold", broken ? "text-slate-400 bg-red-50/40" : "text-slate-700")}>
-                                      <td className="px-3 py-2">
-                                        {n.name} <span className="text-[9px] text-slate-400">· {pump.name}</span>
-                                        {broken && <span className="ml-2 text-[9px] font-black px-2 py-0.5 rounded-full bg-red-100 text-red-600 uppercase">En panne</span>}
-                                      </td>
-                                      <td className="px-3 py-2 text-right tabular-nums">{startIdx.toLocaleString('fr-FR')}</td>
-                                      <td className="px-3 py-2 text-right tabular-nums">{endIdx.toLocaleString('fr-FR')}</td>
-                                      <td className={cn("px-3 py-2 text-right tabular-nums", broken ? "text-slate-300" : "text-blue-700")}>{diff.toLocaleString('fr-FR', { maximumFractionDigits: 1 })}</td>
-                                      <td className={cn("px-3 py-2 text-right tabular-nums", broken ? "text-slate-300" : "text-green-700")}>{(diff * price).toLocaleString('fr-FR', { maximumFractionDigits: 0 })}</td>
-                                    </tr>
-                                  );
-                                }))}
-                              </tbody>
-                            </table>
+                      {wizNozzleGroups.map(group => (
+                        <div key={group.pompisteId} className="rounded-2xl border-2 border-slate-100 overflow-hidden">
+                          <div className="px-4 py-2 bg-slate-50 text-[10px] font-black text-slate-600 uppercase">
+                            👤 {group.pompisteName}<span className="text-blue-700 normal-case"> · 🛣 {group.trackName}</span>
                           </div>
-                        );
-                      })}
+                          <table className="w-full text-left text-[11px]">
+                            <thead className="bg-white text-slate-400 uppercase text-[9px] font-black border-b border-slate-100">
+                              <tr>
+                                <th className="px-3 py-2">Pistolet</th>
+                                <th className="px-3 py-2 text-right">Index début</th>
+                                <th className="px-3 py-2 text-right">Index fin</th>
+                                <th className="px-3 py-2 text-right">Écart (L)</th>
+                                <th className="px-3 py-2 text-right">Montant</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                              {group.nozzles.map(n => {
+                                const pump = pumps.find(p => p.id === n.pumpId);
+                                const broken = isBrokenNozzle(n.id);
+                                const startIdx = startNozzleIdx(n);
+                                const endIdx = endIdxFor(n);
+                                const diff = Math.max(0, endIdx - startIdx);
+                                const price = settings.fuelPrices[(pump?.type || 'DIESEL') as Tank['type']] || 0;
+                                return (
+                                  <tr key={n.id} className={cn("font-bold", broken ? "text-slate-400 bg-red-50/40" : "text-slate-700")}>
+                                    <td className="px-3 py-2">
+                                      {n.name} <span className="text-[9px] text-slate-400">· {pump?.name || '—'}</span>
+                                      {broken && <span className="ml-2 text-[9px] font-black px-2 py-0.5 rounded-full bg-red-100 text-red-600 uppercase">En panne</span>}
+                                    </td>
+                                    <td className="px-3 py-2 text-right tabular-nums">{startIdx.toLocaleString('fr-FR')}</td>
+                                    <td className="px-3 py-2 text-right tabular-nums">{endIdx.toLocaleString('fr-FR')}</td>
+                                    <td className={cn("px-3 py-2 text-right tabular-nums", broken ? "text-slate-300" : "text-blue-700")}>{diff.toLocaleString('fr-FR', { maximumFractionDigits: 1 })}</td>
+                                    <td className={cn("px-3 py-2 text-right tabular-nums", broken ? "text-slate-300" : "text-green-700")}>{(diff * price).toLocaleString('fr-FR', { maximumFractionDigits: 0 })}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      ))}
                       {renderOffServiceTracksNote()}
                     </motion.div>
                   )}
 
-                  {/* STEP 7: Comptabilité */}
-                  {step === 7 && (
+                  {/* STEP 6: Comptabilité */}
+                  {step === 6 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
                       {/* SUB-SECTION A: Résumé des ventes par piste */}
                       <div className="space-y-2">
@@ -2991,18 +2752,24 @@ const Brigades = () => {
                   <motion.button
                     whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
                     onClick={() => {
-                      if (step === 7) {
+                      if (step === 6) {
                         handleStartBrigade();
                       } else {
-                        if (step === 2) {
-                          // initialize presence for chef's pompistes if not set
-                          const chef2 = brigadeChefs.find(c => c.id === chefId);
-                          const ids = chef2?.pompisteIds || [];
-                          setPompistePresence(prev => {
+                        // En quittant l'étape 1, la sélection de pistolets encore
+                        // implicite (« tous ceux de la piste ») est figée : les
+                        // étapes suivantes travaillent sur une liste explicite.
+                        if (step === 1) {
+                          setPompisteNozzles(prev => {
                             const next = { ...prev };
-                            ids.forEach(pid => { if (!next[pid]) next[pid] = 'present'; });
+                            presentAssignments.forEach(a => { next[a.pompisteId] = a.nozzleIds || []; });
                             return next;
                           });
+                          setNozzlesTouched(prev => {
+                            const next = { ...prev };
+                            presentAssignments.forEach(a => { next[a.pompisteId] = true; });
+                            return next;
+                          });
+                          setNozzlePickerFor(null);
                         }
                         setStep(s => s + 1);
                       }
@@ -3010,7 +2777,7 @@ const Brigades = () => {
                     disabled={isSubmitting || !canGoNext}
                     className="flex-[2] bg-gradient-to-r from-blue-900 to-blue-800 hover:shadow-lg text-white font-black uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2 rounded-lg py-3 transition-all transform hover:-translate-y-0.5 text-[10px]"
                   >
-                    {isSubmitting ? (<><LoaderCircle className="w-4 h-4 animate-spin" />Traitement...</>) : step < 7 ? (<>Suivant <ArrowRight className="w-4 h-4" /></>) : (editingBrigade ? 'Mettre à jour' : 'Créer la Brigade')}
+                    {isSubmitting ? (<><LoaderCircle className="w-4 h-4 animate-spin" />Traitement...</>) : step < 6 ? (<>Suivant <ArrowRight className="w-4 h-4" /></>) : (editingBrigade ? 'Mettre à jour' : 'Créer la Brigade')}
                   </motion.button>
                 </div>
               </motion.div>
@@ -3047,7 +2814,6 @@ const Brigades = () => {
             pumps={pumps}
             tanks={tanks}
             pompistes={pompistes}
-            brigadeChefs={brigadeChefs}
             pumpNozzles={pumpNozzles}
             tracks={tracks}
             shopSales={shopSales}

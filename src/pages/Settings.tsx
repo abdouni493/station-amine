@@ -1316,7 +1316,6 @@ const Settings = () => {
                                   { label: 'Client', value: tx.clientName || 'Sans nom' },
                                   { label: 'Date', value: tx.date },
                                   { label: 'Brigade', value: brigade ? `${brigade.date} — ${brigade.shift}` : tx.brigadeId },
-                                  { label: 'Chef de Brigade', value: brigadeChef?.name || '—' },
                                   { label: 'Piste', value: track?.name || tx.trackName || '—' },
                                   { label: 'Pompiste', value: pompiste?.name || tx.pompisteName || '—' },
                                   { label: 'Type Carburant', value: tx.fuelType },

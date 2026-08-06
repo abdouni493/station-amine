@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, Target, Calendar, Fuel, Store, Gauge, Wrench, Map,
   ClipboardList, Package, ShoppingCart, Archive, Users, Truck, UsersRound,
-  UserCog, Building2, CreditCard, FileText, BarChart2, Receipt,
+  Building2, CreditCard, FileText, BarChart2, Receipt,
   Settings as SettingsIcon, Wallet, Ticket,
 } from 'lucide-react';
 import type React from 'react';
@@ -100,7 +100,6 @@ export const GROUPS: GroupDef[] = [
     title: "Personnel",
     modules: [
       { id: "Pompistes",         label: "Pompistes",         icon: UsersRound, actions: ['creer', 'modifier', 'supprimer', 'imprimer'] },
-      { id: "Chefs de Brigade",  label: "Chefs de Brigade",  icon: UserCog,    actions: ['creer', 'modifier', 'supprimer', 'imprimer'] },
       { id: "Gérants",           label: "Gérants",           icon: Building2,  actions: ['creer', 'modifier', 'supprimer', 'imprimer'] },
       { id: "Employés Magasin",  label: "Employés Magasin",  icon: Store,      actions: ['creer', 'modifier', 'supprimer', 'imprimer'] },
       { id: "Mes Paiements",     label: "Mes Paiements",     icon: Wallet,     actions: ['imprimer'] },
@@ -181,22 +180,6 @@ export function getDefaultPermissions(
     // Everything else stays OFF (no Brigades page, no HR, no reports, etc.)
   }
 
-  else if (role === 'chef_brigade') {
-    // Dashboard: view own brigade info + payment summary
-    perms["Tableau de bord"]  = { ...viewOnlyPermission };
-    // Brigades: chef creates/manages his own brigades — view + create + modify + print, NO delete
-    perms["Brigades"]         = { voir: true, creer: true, modifier: true, supprimer: false, imprimer: true, exporter: false, scanner: false, generer: false };
-    // Fuel sales: full access
-    perms["Ventes Carburant"] = { ...fullPermission };
-    // Cuves: view only (chef needs to see tank levels)
-    perms["Cuves"]            = { ...viewOnlyPermission };
-    // My payments: view only
-    perms["Mes Paiements"]    = { ...viewOnlyPermission };
-    // Profile settings: view + modify
-    perms["Paramètres"]       = { voir: true, creer: false, modifier: true, supprimer: false, imprimer: false, exporter: false, scanner: false, generer: false };
-    // Everything else OFF (no comptabilité, no HR, no reports, no stats)
-  }
-
   else if (role === 'gerant') {
     // Gérant sees everything EXCEPT reports and statistics
     ALL_MODULES.forEach(m => { perms[m.id] = { ...viewOnlyPermission }; });
@@ -227,7 +210,6 @@ export function getDefaultPermissions(
     perms["Rapports"]          = { ...emptyPermission };
     // BLOCK HR management pages
     perms["Pompistes"]         = { ...emptyPermission };
-    perms["Chefs de Brigade"]  = { ...emptyPermission };
     perms["Gérants"]           = { ...emptyPermission };
     perms["Employés Magasin"]  = { ...emptyPermission };
   }

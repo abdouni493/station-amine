@@ -24,12 +24,6 @@ const MyBrigade = () => {
     ) ?? null;
   }, [brigades, currentUserId]);
 
-  // Find chef of active brigade
-  const activeChef = useMemo(() => {
-    if (!activeBrigade) return null;
-    return brigadeChefs.find(c => c.id === activeBrigade.chefId) ?? null;
-  }, [activeBrigade, brigadeChefs]);
-
   // Find pompiste track
   const pompisteTrack = useMemo(() => {
     if (!currentPompiste) return null;
@@ -112,7 +106,7 @@ const MyBrigade = () => {
           <EmptyState
             icon={ClipboardList}
             title="Aucune brigade active"
-            description="Vous n'êtes actuellement affecté à aucune brigade ouverte sur les pistes. Veuillez contacter votre Chef de Brigade."
+            description="Vous n'êtes actuellement affecté à aucune brigade ouverte sur les pistes. Veuillez contacter la gérance."
           />
         </div>
       ) : (
@@ -165,42 +159,6 @@ const MyBrigade = () => {
                 </div>
               </div>
             </motion.div>
-
-            {/* Chef Card */}
-            {activeChef && (
-              <motion.div 
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 }}
-                className="card-glass p-8 space-y-6 relative"
-              >
-                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-[#003087]/50 block">
-                  Responsable
-                </span>
-
-                <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 bg-gradient-to-tr from-[#003087] to-[#0044bb] text-white rounded-2xl flex items-center justify-center font-black text-xl shadow-md">
-                    {activeChef.name.charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Chef de Brigade</p>
-                    <p className="text-lg font-black text-slate-800 uppercase italic leading-none mt-1">
-                      {activeChef.name}
-                    </p>
-                  </div>
-                </div>
-
-                {activeChef.phone && (
-                  <a 
-                    href={`tel:${activeChef.phone}`}
-                    className="w-full btn-outline py-3 flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-[0.98] transition-all"
-                  >
-                    <Phone className="w-4 h-4" />
-                    <span>{activeChef.phone}</span>
-                  </a>
-                )}
-              </motion.div>
-            )}
           </div>
 
           {/* Column 2: Track & Pumps */}

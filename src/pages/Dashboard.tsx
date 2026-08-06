@@ -142,12 +142,11 @@ const TanksPanel = ({ tanks, delay = 0.2 }: { tanks: any[]; delay?: number }) =>
 /* ─── Dashboard header (outside Dashboard so React.memo prevents remount every tick) ─── */
 interface DashboardHeaderProps {
   stationName: string;
-  activeBrigade?: { chefId?: string; startTimestamp?: string } | null;
-  brigadeChefs: { id: string; name: string }[];
+  activeBrigade?: { id?: string; shift?: string; startTimestamp?: string } | null;
   showBrigadeBadge: boolean;
 }
 
-const DashboardHeader = React.memo(({ stationName, activeBrigade, brigadeChefs, showBrigadeBadge }: DashboardHeaderProps) => {
+const DashboardHeader = React.memo(({ stationName, activeBrigade, showBrigadeBadge }: DashboardHeaderProps) => {
   const [timeStr, setTimeStr] = useState(() =>
     new Date().toLocaleTimeString('fr-DZ', { hour: '2-digit', minute: '2-digit' })
   );
@@ -205,7 +204,7 @@ const DashboardHeader = React.memo(({ stationName, activeBrigade, brigadeChefs, 
             <div>
               <p className="text-green-400 text-[10px] font-black uppercase tracking-wider leading-none mb-0.5">Brigade Active</p>
               <p className="text-white font-black text-sm leading-none">
-                {brigadeChefs.find(c => c.id === activeBrigade.chefId)?.name || '—'}
+                {activeBrigade.shift || 'En cours'}
               </p>
               {activeBrigade.startTimestamp && (
                 <p className="text-white/40 text-[10px] mt-0.5">
@@ -271,7 +270,6 @@ const Dashboard = () => {
 
   const isAdmin   = currentUserRole === 'admin';
   const isGerant  = currentUserRole === 'gerant';
-  const isChef    = currentUserRole === 'chef_brigade';
   const isPompiste = currentUserRole === 'pompiste';
   const isMagasin = currentUserRole === 'magasin';
   const showFull  = isAdmin || isGerant;
@@ -299,16 +297,6 @@ const Dashboard = () => {
 
   /* global active brigade (admin/gerant header badge) */
   const activeBrigade = useMemo(() => brigades.find(b => b.status === "Ouverte"), [brigades]);
-
-  /* chef: their own active brigade */
-  const myBrigadeAsChef = useMemo(() => {
-    if (!isChef || !currentUserId) return null;
-    return brigades.find(b => b.chefId === currentUserId && b.status === 'Ouverte') ?? null;
-  }, [brigades, isChef, currentUserId]);
-
-  const chefSales     = useMemo(() => myBrigadeAsChef ? fuelSales.filter(s => s.brigadeId === myBrigadeAsChef.id) : [], [fuelSales, myBrigadeAsChef]);
-  const chefLiters    = useMemo(() => chefSales.reduce((s, x) => s + x.liters, 0), [chefSales]);
-  const chefCollected = useMemo(() => chefSales.reduce((s, x) => s + x.total,  0), [chefSales]);
 
   /* pompiste: brigade they're assigned to */
   const myBrigadeAsPompiste = useMemo(() => {
@@ -369,8 +357,7 @@ const Dashboard = () => {
       <DashboardHeader
         stationName={settings?.name || "Station Naftal"}
         activeBrigade={activeBrigade}
-        brigadeChefs={brigadeChefs}
-        showBrigadeBadge={showFull || isChef}
+        showBrigadeBadge={showFull}
       />
 
       {/* Toolbar — décalage acceptance settings */}
@@ -535,7 +522,6 @@ const Dashboard = () => {
                           : "La cuve a diminué plus que les pistolets — possible vente directe"}
                       </p>
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px] font-bold text-slate-600">
-                        {a.chefName && <p>👨‍💼 Chef: <span className="text-slate-800">{a.chefName}</span></p>}
                         {a.tankName && <p>🛢 Cuve: <span className="text-slate-800">{a.tankName}</span></p>}
                         {a.pompisteName && <p>⛽ Pompiste: <span className="text-slate-800">{a.pompisteName}</span></p>}
                         <p>📉 Décalage: <span className="text-slate-800">{a.decalageLiters.toLocaleString('fr-DZ', { maximumFractionDigits: 1 })} L / {a.decalageAmount.toLocaleString('fr-DZ', { maximumFractionDigits: 0 })} DZD</span></p>
@@ -630,11 +616,11 @@ const Dashboard = () => {
                 <div className="flex items-center gap-3 mb-4">
                   <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-xl font-black text-white flex-shrink-0"
                     style={{ background: "linear-gradient(135deg,#003087,#0044bb)" }}>
-                    {(brigadeChefs.find(c => c.id === activeBrigade.chefId)?.name || "C")[0].toUpperCase()}
+                    {(activeBrigade.pompisteIds || []).length}
                   </div>
                   <div>
                     <p className="font-black text-sm" style={{ color: "var(--naftal-blue-700)" }}>
-                      {brigadeChefs.find(c => c.id === activeBrigade.chefId)?.name || "Chef"}
+                      {(activeBrigade.pompisteIds || []).length} pompiste(s) en service
                     </p>
                     <p className="text-xs text-slate-400">{activeBrigade.shift} · {activeBrigade.date}</p>
                   </div>
@@ -727,112 +713,6 @@ const Dashboard = () => {
   );
 
   /* ════════════════════════════════════════════════════════════ */
-  /* CHEF DE BRIGADE                                             */
-  /* ════════════════════════════════════════════════════════════ */
-  if (isChef) return (
-    <div className="space-y-6 max-w-[1600px] mx-auto pb-10">
-      <DashboardHeader
-        stationName={settings?.name || "Station Naftal"}
-        activeBrigade={activeBrigade}
-        brigadeChefs={brigadeChefs}
-        showBrigadeBadge={showFull || isChef}
-      />
-      <AlertsWidget alerts={dashboardAlerts} onDismiss={dismiss} />
-
-      <div className="grid lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 space-y-5">
-          {/* Ma Brigade */}
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="card-naftal p-6">
-            <div className="flex items-center gap-2 mb-5">
-              <Target className="w-4 h-4" style={{ color: "var(--naftal-blue-600)" }} />
-              <h3 className="text-sm font-black uppercase tracking-wider" style={{ color: "var(--naftal-blue-600)" }}>Ma Brigade</h3>
-              {myBrigadeAsChef && (
-                <div className="ml-auto flex items-center gap-1.5">
-                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                  <span className="text-[10px] font-bold text-green-600">En service</span>
-                </div>
-              )}
-            </div>
-            {myBrigadeAsChef ? (
-              <>
-                <div className="flex items-center gap-2 rounded-xl p-3 mb-5"
-                  style={{ background: "rgba(0,48,135,0.06)", border: "1px solid rgba(0,48,135,0.08)" }}>
-                  <Clock className="w-4 h-4" style={{ color: "var(--naftal-blue-600)" }} />
-                  <span className="font-black text-xl tracking-tighter font-mono" style={{ color: "var(--naftal-blue-700)" }}>
-                    {elapsed(myBrigadeAsChef.startTimestamp)}
-                  </span>
-                  <span className="text-xs text-slate-400 ml-2">{myBrigadeAsChef.shift} · {myBrigadeAsChef.date}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-4 mb-5">
-                  <div className="p-4 rounded-xl border bg-white/60">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Litres Vendus</p>
-                    <p className="text-xl font-black text-blue-700">{chefLiters.toLocaleString('fr-DZ')} <span className="text-sm">L</span></p>
-                  </div>
-                  <div className="p-4 rounded-xl border bg-white/60">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Montant Collecté</p>
-                    <p className="text-xl font-black text-green-700">{chefCollected.toLocaleString('fr-DZ')} <span className="text-sm">DA</span></p>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Mon Équipe</p>
-                  <div className="flex flex-wrap gap-2">
-                    {(myBrigadeAsChef.pompisteIds || []).map(pid => {
-                      const p = pompistes.find(x => x.id === pid);
-                      return p ? (
-                        <span key={pid} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 rounded-xl text-xs font-bold text-slate-700">
-                          <span className="w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center text-[9px] font-black">
-                            {p.name[0].toUpperCase()}
-                          </span>
-                          {p.name}
-                        </span>
-                      ) : null;
-                    })}
-                    {(!myBrigadeAsChef.pompisteIds || myBrigadeAsChef.pompisteIds.length === 0) && (
-                      <p className="text-xs text-slate-400">Aucun pompiste assigné</p>
-                    )}
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="text-center py-10">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-3" style={{ background: "rgba(0,48,135,0.06)" }}>
-                  <Activity className="w-6 h-6 text-slate-300" />
-                </div>
-                <p className="text-sm text-slate-400 mb-4">Aucune brigade en cours</p>
-                <button onClick={() => navigate("/chef-brigade")} className="btn-primary text-xs px-4 py-2">Voir mes Brigades</button>
-              </div>
-            )}
-          </motion.div>
-
-          <TanksPanel tanks={tanks} delay={0.2} />
-        </div>
-
-        {/* Right */}
-        <div>
-          <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.25 }} className="card-glass p-5">
-            <h3 className="text-xs font-black uppercase tracking-wider mb-4" style={{ color: "var(--naftal-blue-600)" }}>Mes Stats du Jour</h3>
-            <div className="space-y-3">
-              {[
-                { label: "Pompistes dans ma brigade", value: (myBrigadeAsChef?.pompisteIds || []).length,      icon: Users,         color: "#003087" },
-                { label: "Ventes de la brigade",      value: chefSales.length,                                 icon: Fuel,          color: "#FFB800" },
-                { label: "Cuves en alerte",           value: tanks.filter(t => t.current < t.alertThreshold).length, icon: AlertTriangle, color: "#ef4444" },
-              ].map((s, i) => (
-                <div key={i} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-50 cursor-default">
-                  <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: s.color + "18" }}>
-                    <s.icon className="w-4 h-4" style={{ color: s.color }} />
-                  </div>
-                  <span className="text-sm text-slate-600 flex-1">{s.label}</span>
-                  <span className="text-sm font-black" style={{ color: "var(--naftal-blue-700)" }}>{s.value}</span>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-        </div>
-      </div>
-    </div>
-  );
-
-  /* ════════════════════════════════════════════════════════════ */
   /* POMPISTE                                                    */
   /* ════════════════════════════════════════════════════════════ */
   if (isPompiste) return (
@@ -840,8 +720,7 @@ const Dashboard = () => {
       <DashboardHeader
         stationName={settings?.name || "Station Naftal"}
         activeBrigade={activeBrigade}
-        brigadeChefs={brigadeChefs}
-        showBrigadeBadge={showFull || isChef}
+        showBrigadeBadge={showFull}
       />
       <AlertsWidget alerts={dashboardAlerts} onDismiss={dismiss} />
 
@@ -864,13 +743,13 @@ const Dashboard = () => {
                 <div className="flex items-center gap-3 mb-4">
                   <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-xl font-black text-white flex-shrink-0"
                     style={{ background: "linear-gradient(135deg,#003087,#0044bb)" }}>
-                    {(brigadeChefs.find(c => c.id === myBrigadeAsPompiste.chefId)?.name || "C")[0].toUpperCase()}
+                    ⛽
                   </div>
                   <div>
                     <p className="font-black text-sm" style={{ color: "var(--naftal-blue-700)" }}>
-                      Chef : {brigadeChefs.find(c => c.id === myBrigadeAsPompiste.chefId)?.name || "—"}
+                      Brigade {myBrigadeAsPompiste.shift}
                     </p>
-                    <p className="text-xs text-slate-400">{myBrigadeAsPompiste.shift} · {myBrigadeAsPompiste.date}</p>
+                    <p className="text-xs text-slate-400">{myBrigadeAsPompiste.date}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 rounded-xl p-3 mb-5"
@@ -936,8 +815,7 @@ const Dashboard = () => {
       <DashboardHeader
         stationName={settings?.name || "Station Naftal"}
         activeBrigade={activeBrigade}
-        brigadeChefs={brigadeChefs}
-        showBrigadeBadge={showFull || isChef}
+        showBrigadeBadge={showFull}
       />
       <AlertsWidget alerts={dashboardAlerts} onDismiss={dismiss} />
 

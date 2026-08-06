@@ -4,6 +4,7 @@ import {
   User, DollarSign, ShoppingBag, Activity, ChevronRight, CheckCircle, Banknote
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { brigadeNozzlesOfPompiste } from "../lib/brigadeNozzles";
 import { cn } from "@/src/lib/utils";
 import { denominationsTotal, filledDenominations } from "../lib/denominations";
 import {
@@ -202,7 +203,7 @@ const BrigadeDetailModal: React.FC<Props> = ({
             </div>
             <div>
               <h2 className="font-black text-sm uppercase tracking-widest italic">Détails Brigade</h2>
-              <p className="text-[11px] text-blue-200 font-bold mt-0.5">{brigade.date} · {brigade.shift} · {chef?.name || 'N/A'}</p>
+              <p className="text-[11px] text-blue-200 font-bold mt-0.5">{brigade.date} · {brigade.shift}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -251,7 +252,6 @@ const BrigadeDetailModal: React.FC<Props> = ({
                     {[
                       { label: 'Date', value: brigade.date },
                       { label: 'Quart', value: brigade.shift },
-                      { label: 'Chef', value: chef?.name || 'N/A' },
                       { label: 'Statut', value: brigade.status },
                       { label: 'Heure Début', value: brigade.startTime || '—' },
                       { label: 'Heure Fin', value: brigade.endTime || '—' },
@@ -362,8 +362,10 @@ const BrigadeDetailModal: React.FC<Props> = ({
                             const pompiste = pompistes.find(p => p.id === assignment.pompisteId);
                             const trackId = assignment.trackId || pompiste?.trackId || '';
                             const track = tracks.find(t => t.id === trackId);
-                            const trackPumps = pumps.filter(p => p.trackId === trackId);
-                            const pompNozzles = nozzleData.filter(d => trackPumps.some(p => p.id === d.pump?.id));
+                            // Pistolets réellement tenus (choisis à la création),
+                            // avec repli sur ceux de la piste pour l'historique.
+                            const heldNozzles = brigadeNozzlesOfPompiste(brigade, assignment.pompisteId, pumpNozzles, pumps);
+                            const pompNozzles = nozzleData.filter(d => heldNozzles.some(n => n.id === d.nozzle.id));
                             const liters = pompNozzles.reduce((s, d) => s + d.liters, 0);
                             const revenue = pompNozzles.reduce((s, d) => s + d.revenue, 0);
                             return (
@@ -387,6 +389,25 @@ const BrigadeDetailModal: React.FC<Props> = ({
                                     </div>
                                   )}
                                 </div>
+                                {assignment.present && (
+                                  <div className="pl-13">
+                                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">
+                                      Pistolets tenus ({heldNozzles.length})
+                                    </p>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {heldNozzles.length === 0
+                                        ? <span className="text-[10px] text-slate-400 font-bold italic">Aucun pistolet attribué</span>
+                                        : heldNozzles.map(n => {
+                                            const pump = pumps.find(pu => pu.id === n.pumpId);
+                                            return (
+                                              <span key={n.id} className="px-2 py-1 bg-purple-50 border border-purple-200 rounded-lg text-[10px] font-black text-purple-700">
+                                                ⚡ {n.name}{pump ? <span className="text-purple-400"> · {pump.name}</span> : null}
+                                              </span>
+                                            );
+                                          })}
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             );
                           })}

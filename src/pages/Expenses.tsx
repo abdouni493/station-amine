@@ -807,7 +807,6 @@ const Expenses = () => {
                             onChange={e => setFormData({ ...formData, paidBy: e.target.value })}
                            >
                               <option value="Caisse">Caisse</option>
-                              <option value="Chef de Brigade">Chef de Brigade</option>
                               <option value="Admin">Admin</option>
                            </select>
                         </div>

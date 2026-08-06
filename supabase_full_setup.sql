@@ -199,6 +199,9 @@ create table if not exists public.pumps (
 );
 
 -- ── 3.4  Pistolets ───────────────────────────────────────────────────────────
+-- `track_id` rattache la piste AU PISTOLET (page Pistes → « Pistolets
+-- rattachés »). Laissée vide, le pistolet suit simplement la piste de sa pompe :
+-- la piste effective est donc `coalesce(nozzle.track_id, pump.track_id)`.
 create table if not exists public.pump_nozzles (
   id          uuid primary key default gen_random_uuid(),
   pump_id     uuid not null references public.pumps(id) on delete cascade,
@@ -206,9 +209,13 @@ create table if not exists public.pump_nozzles (
   last_index  numeric(16,2) not null default 0,
   start_index numeric(16,2) not null default 0,
   status      text not null default 'Actif',
+  track_id    uuid references public.tracks(id) on delete set null,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
+
+-- Ajout conditionnel : le script reste rejouable sur une base déjà installée.
+alter table public.pump_nozzles add column if not exists track_id uuid references public.tracks(id) on delete set null;
 
 -- ── 3.5  Réglages de cuve (corrections manuelles de niveau) ──────────────────
 create table if not exists public.cuve_reglages (
@@ -1253,6 +1260,9 @@ end $$;
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- SECTION 13 — INDEX
 -- ═══════════════════════════════════════════════════════════════════════════════
+
+create index if not exists idx_nozzles_pump          on public.pump_nozzles(pump_id);
+create index if not exists idx_nozzles_track         on public.pump_nozzles(track_id);
 
 create index if not exists idx_pompistes_auth        on public.pompistes(auth_user_id);
 create index if not exists idx_pompistes_track       on public.pompistes(track_id);

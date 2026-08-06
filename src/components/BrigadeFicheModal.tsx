@@ -4,15 +4,15 @@ import { motion } from "motion/react";
 import { X, Printer, Download } from "lucide-react";
 import { exportElementToPdf, printDocumentMode } from "../lib/pdf";
 import {
-  Brigade, Pump, Tank, Pompiste, BrigadeChef, PumpNozzle, Track, ShopSale, StationSettings, BrigadeAccounting
+  Brigade, Pump, Tank, Pompiste, PumpNozzle, Track, ShopSale, StationSettings, BrigadeAccounting
 } from "../store/AppContext";
+import { brigadeNozzlesOfPompiste } from "../lib/brigadeNozzles";
 
 interface Props {
   brigade: Brigade;
   pumps: Pump[];
   tanks: Tank[];
   pompistes: Pompiste[];
-  brigadeChefs: BrigadeChef[];
   pumpNozzles: PumpNozzle[];
   tracks: Track[];
   shopSales: ShopSale[];
@@ -28,18 +28,30 @@ const fmtDT = (iso?: string, fallback?: string) => {
 };
 
 const BrigadeFicheModal: React.FC<Props> = ({
-  brigade, pumps, tanks, pompistes, brigadeChefs, pumpNozzles, tracks, settings, accounting, onClose
+  brigade, pumps, tanks, pompistes, pumpNozzles, tracks, settings, accounting, onClose
 }) => {
   const ficheRef = useRef<HTMLDivElement>(null);
-  const chef = brigadeChefs.find(c => c.id === brigade.chefId);
+
+  /** Pompistes présents, chacun avec les pistolets qu'il tenait. */
+  const pompisteNozzles = useMemo(
+    () => (brigade.pompisteAssignments || []).filter(a => a.present).map(a => ({
+      assignment: a,
+      pompiste: pompistes.find(p => p.id === a.pompisteId),
+      track: tracks.find(t => t.id === a.trackId),
+      nozzles: brigadeNozzlesOfPompiste(brigade, a.pompisteId, pumpNozzles, pumps),
+    })),
+    [brigade, pompistes, tracks, pumpNozzles, pumps],
+  );
 
   const activeNozzles = useMemo(() => {
+    // Les pistolets de la fiche sont ceux réellement tenus par les pompistes.
+    const held = pompisteNozzles.flatMap(g => g.nozzles);
+    if (held.length > 0) return [...new Map(held.map(n => [n.id, n])).values()];
     if (brigade.activeNozzleIds && brigade.activeNozzleIds.length > 0)
       return pumpNozzles.filter(n => brigade.activeNozzleIds!.includes(n.id));
-    const brigadeTrackIds = (brigade.pompisteAssignments || []).filter(a => a.present).map(a => a.trackId);
-    const displayPumps = brigadeTrackIds.length > 0 ? pumps.filter(p => brigadeTrackIds.includes(p.trackId)) : pumps.filter(p => Object.keys(brigade.startIndices || {}).includes(p.id));
+    const displayPumps = pumps.filter(p => Object.keys(brigade.startIndices || {}).includes(p.id));
     return pumpNozzles.filter(n => displayPumps.some(p => p.id === n.pumpId));
-  }, [brigade, pumps, pumpNozzles]);
+  }, [brigade, pumps, pumpNozzles, pompisteNozzles]);
 
   const nozzleRows = useMemo(() => activeNozzles.map(nozzle => {
     const pump = pumps.find(p => p.id === nozzle.pumpId);
@@ -71,27 +83,30 @@ const BrigadeFicheModal: React.FC<Props> = ({
     return m;
   }, [accounting]);
 
-  // Detailed breakdown: Piste → Pompe → Pistolet
-  const pumpBreakdown = useMemo(() => {
-    const trackList = [...new Set(nozzleRows.map(d => d.track?.id).filter(Boolean))];
-    return trackList.map(trackId => {
-      const track = tracks.find(t => t.id === trackId);
-      const assignment = brigade.pompisteAssignments?.find(a => a.trackId === trackId && a.present);
-      const pompiste = assignment ? pompistes.find(p => p.id === assignment.pompisteId) : undefined;
-      const trackPumps = pumps.filter(p => p.trackId === trackId);
+  // Détail : Pompiste → Piste → Pompe → Pistolet.
+  // Le regroupement suit les PISTOLETS attribués au pompiste à la création de
+  // la brigade, pas les pompes de sa piste : un pistolet repris ailleurs reste
+  // donc bien compté chez lui.
+  const pumpBreakdown = useMemo(
+    () => pompisteNozzles.map(({ assignment, pompiste, track, nozzles }) => {
+      const rows = nozzleRows.filter(d => nozzles.some(n => n.id === d.nozzle.id));
       const pData = pompiste ? brigade.pompisteData?.[pompiste.id] : undefined;
       const justifs = (pompiste && justifByPompiste[pompiste.id]) || [];
+      const pumpIds = [...new Set(rows.map(d => d.pump?.id).filter(Boolean))];
       return {
+        key: assignment.pompisteId,
         track, pompiste, pData, justifs,
-        pumps: trackPumps.map(pump => {
-          const nozzles = nozzleRows.filter(d => d.pump?.id === pump.id);
-          return { pump, nozzles, totalLiters: nozzles.reduce((s, d) => s + d.liters, 0), totalAmount: nozzles.reduce((s, d) => s + d.amount, 0) };
+        pumps: pumpIds.map(pumpId => {
+          const pump = pumps.find(p => p.id === pumpId)!;
+          const pumpRows = rows.filter(d => d.pump?.id === pumpId);
+          return { pump, nozzles: pumpRows, totalLiters: pumpRows.reduce((s, d) => s + d.liters, 0), totalAmount: pumpRows.reduce((s, d) => s + d.amount, 0) };
         }),
-        totalLiters: nozzleRows.filter(d => trackPumps.some(p => p.id === d.pump?.id)).reduce((s, d) => s + d.liters, 0),
-        totalAmount: nozzleRows.filter(d => trackPumps.some(p => p.id === d.pump?.id)).reduce((s, d) => s + d.amount, 0),
+        totalLiters: rows.reduce((s, d) => s + d.liters, 0),
+        totalAmount: rows.reduce((s, d) => s + d.amount, 0),
       };
-    });
-  }, [nozzleRows, tracks, pumps, pompistes, brigade, justifByPompiste]);
+    }),
+    [pompisteNozzles, nozzleRows, pumps, brigade, justifByPompiste],
+  );
 
   // Décalage alerts (recomputed per tank: nozzleDiff vs cuveDiff)
   const decalageAlerts = useMemo(() => {
@@ -126,7 +141,7 @@ const BrigadeFicheModal: React.FC<Props> = ({
     setPdfBusy(true);
     const ok = await exportElementToPdf(
       ficheRef.current,
-      `Fiche_Brigade_${(chef?.name || brigade.id).replace(/\s+/g, '_')}_${brigade.date}.pdf`,
+      `Fiche_Brigade_${brigade.id.slice(0, 8)}_${brigade.date}.pdf`,
       { header: `${settings.name || 'Station'} — Fiche de Brigade — ${brigade.date}` }
     );
     setPdfBusy(false);
@@ -163,7 +178,7 @@ const BrigadeFicheModal: React.FC<Props> = ({
       <div className="grid grid-cols-4 gap-3">
         {[
           { label: 'N° Brigade', value: brigade.id.slice(0, 8) },
-          { label: 'Chef', value: chef?.name || 'N/A' },
+          { label: 'Shift', value: brigade.shift || '—' },
           { label: 'Début', value: fmtDT(brigade.startDatetime, `${brigade.date} ${brigade.startTime || ''}`) },
           { label: 'Fin', value: fmtDT(brigade.endDatetime, `${brigade.date} ${brigade.endTime || ''}`) },
         ].map(item => (
@@ -174,17 +189,38 @@ const BrigadeFicheModal: React.FC<Props> = ({
         ))}
       </div>
 
-      {/* Pompistes présents */}
-      {pumpBreakdown.length > 0 && (
+      {/* Pompistes présents — piste tenue et pistolets attribués */}
+      {pompisteNozzles.length > 0 && (
         <section>
-          <FicheHeader num="1" label="Pompistes Présents" />
-          <div className="flex flex-wrap gap-2">
-            {pumpBreakdown.map((b, i) => (
-              <span key={i} className="px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg text-xs font-black text-blue-900">
-                {b.pompiste?.name || '—'} <span className="text-blue-400 font-bold">· {b.track?.name || '—'}</span>
-              </span>
-            ))}
-          </div>
+          <FicheHeader num="1" label="Pompistes Présents & Pistolets Tenus" />
+          <table className="w-full text-sm border-collapse">
+            <thead><tr className="bg-blue-900 text-white">
+              {['Pompiste', 'Piste', 'Pistolets tenus', 'Nb'].map(h => <Th key={h} dark>{h}</Th>)}
+            </tr></thead>
+            <tbody>
+              {pompisteNozzles.map(({ assignment, pompiste, track, nozzles }) => (
+                <tr key={assignment.pompisteId} className="border-b border-slate-200">
+                  <Td><strong>{pompiste?.name || '—'}</strong></Td>
+                  <Td>{track?.name || '—'}</Td>
+                  <Td>
+                    <div className="flex flex-wrap gap-1">
+                      {nozzles.length === 0
+                        ? <span className="text-slate-400">—</span>
+                        : nozzles.map(n => {
+                            const pump = pumps.find(p => p.id === n.pumpId);
+                            return (
+                              <span key={n.id} className="px-2 py-0.5 bg-blue-50 border border-blue-200 rounded text-[10px] font-black text-blue-900">
+                                ⚡ {n.name}{pump ? <span className="text-blue-400 font-bold"> · {pump.name}</span> : null}
+                              </span>
+                            );
+                          })}
+                    </div>
+                  </Td>
+                  <Td><strong className="text-blue-700">{nozzles.length}</strong></Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </section>
       )}
 
@@ -214,17 +250,17 @@ const BrigadeFicheModal: React.FC<Props> = ({
       {/* SECTION 3: Piste → Pompe → Pistolet + comptabilité pompiste */}
       {pumpBreakdown.length > 0 && (
         <section>
-          <FicheHeader num="3" label="Détail par Piste / Pompe / Pistolet" />
-          {pumpBreakdown.map(({ track, pompiste, pData, justifs, pumps: pumpList, totalLiters: tL, totalAmount }) => {
+          <FicheHeader num="3" label="Détail par Pompiste / Pompe / Pistolet" />
+          {pumpBreakdown.map(({ key, track, pompiste, pData, justifs, pumps: pumpList, totalLiters: tL, totalAmount }) => {
             const cash = pData?.totalCollected ?? 0;
             const theo = pData?.theoretical ?? totalAmount;
             const ecart = theo - cash - (justifs || []).reduce((s, j) => s + (j.amount || 0), 0);
             return (
-              <div key={track?.id} className="mb-4 rounded-xl overflow-hidden border-2 border-blue-200">
+              <div key={key} className="mb-4 rounded-xl overflow-hidden border-2 border-blue-200">
                 <div className="px-4 py-3 bg-gradient-to-r from-blue-900 to-blue-800 flex items-center justify-between">
                   <div>
-                    <p className="font-black text-white text-sm">Piste: {track?.name || '—'}</p>
-                    <p className="text-[10px] text-blue-300">Pompiste: {pompiste?.name || '—'}</p>
+                    <p className="font-black text-white text-sm">Pompiste: {pompiste?.name || '—'}</p>
+                    <p className="text-[10px] text-blue-300">Piste: {track?.name || '—'}</p>
                   </div>
                   <div className="text-right">
                     <p className="font-black text-yellow-400">{fmt(totalAmount)} DA</p>
@@ -350,9 +386,9 @@ const BrigadeFicheModal: React.FC<Props> = ({
         </div>
         <div className="grid grid-cols-2 gap-16">
           <div>
-            <p className="text-sm font-black text-slate-700 mb-8">Signature du Chef de Brigade:</p>
+            <p className="text-sm font-black text-slate-700 mb-8">Signature du Chef de Station:</p>
             <div className="border-b-2 border-slate-400 w-full" />
-            <p className="text-xs text-slate-500 mt-1">{chef?.name || '_______________'}</p>
+            <p className="text-xs text-slate-500 mt-1">_______________</p>
           </div>
           <div>
             <p className="text-sm font-black text-slate-700 mb-8">Signature du Gérant:</p>

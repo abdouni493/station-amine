@@ -5,7 +5,7 @@ import {
   Package, ClipboardList, UsersRound, Settings, UserCircle,
   LogOut, Map, Wrench, TrendingUp, FileText, CreditCard,
   Target, ChevronDown, Gauge, Receipt,
-  BarChart2, Archive, UserCog, DollarSign, Building2, ChevronRight, X,
+  BarChart2, Archive, DollarSign, Building2, ChevronRight, X,
   Wallet, CalendarCheck, Shield, UserCheck, Calendar, Ticket
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
@@ -94,7 +94,6 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     id: "hr", label: "Personnel",
     items: [
       { label: "Pompistes",        icon: UsersRound, path: "/pompistes",       moduleId: "Pompistes" },
-      { label: "Chefs de Brigade", icon: UserCog,    path: "/brigade-chefs",   moduleId: "Chefs de Brigade" },
       { label: "Gérants",          icon: Building2,  path: "/gerants",         moduleId: "Gérants" },
       { label: "Employés Magasin", icon: Store,      path: "/magasin-workers", moduleId: "Employés Magasin" },
       { label: "Modèles Permissions", icon: Shield,  path: "/roles-permissions", moduleId: "Paramètres" },
@@ -151,7 +150,6 @@ const WORKER_MODULE_NAV: Record<string, ModuleNavDef> = {
   "Fournisseurs":      { label: "Fournisseurs",      icon: Truck,        path: "/suppliers",       group: "contacts" },
   // Personnel (RH)
   "Pompistes":         { label: "Pompistes",         icon: UsersRound,   path: "/pompistes",       group: "hr" },
-  "Chefs de Brigade":  { label: "Chefs de Brigade",  icon: UserCog,      path: "/brigade-chefs",   group: "hr" },
   "Gérants":           { label: "Gérants",           icon: Building2,    path: "/gerants",         group: "hr" },
   "Employés Magasin":  { label: "Employés Magasin",  icon: Store,        path: "/magasin-workers", group: "hr" },
   // Finances
@@ -177,12 +175,9 @@ const WORKER_GROUP_ORDER: { id: string; label?: string }[] = [
 ];
 
 // Per-role label/path overrides for modules that resolve to a role-specific page.
-// e.g. a chef's "Brigades" grant opens *their* brigades page, not the admin one.
-const WORKER_NAV_OVERRIDES: Record<string, Record<string, { label?: string; path?: string }>> = {
-  chef_brigade: {
-    "Brigades": { label: "Mes Brigades", path: "/chef-brigade" },
-  },
-};
+// Aucun rôle n'a de page dédiée aujourd'hui : la table reste en place pour en
+// rebrancher une sans toucher au reste du calcul de la barre latérale.
+const WORKER_NAV_OVERRIDES: Record<string, Record<string, { label?: string; path?: string }>> = {};
 
 const DASHBOARD_ITEM: NavItem = { label: "Tableau de Bord", icon: LayoutDashboard, path: "/dashboard", moduleId: "Tableau de bord" };
 

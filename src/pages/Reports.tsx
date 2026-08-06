@@ -178,7 +178,6 @@ const Reports = () => {
     new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split("T")[0]
   );
   const [endDate, setEndDate] = useState(new Date().toISOString().split("T")[0]);
-  const [filterChef, setFilterChef] = useState("Tous");
   const previewRef = useRef<HTMLDivElement>(null);
 
   /* ── Date filter ── */
@@ -192,9 +191,7 @@ const Reports = () => {
   /* ── Filtered data ── */
   const fSales  = useMemo(() => fuelSales.filter(s => inRange(s.date)), [fuelSales, startDate, endDate]);
   const sSales  = useMemo(() => shopSales.filter(s => inRange(s.date)), [shopSales, startDate, endDate]);
-  const bBrig   = useMemo(() => brigades.filter(b => inRange(b.date)).filter(
-    b => filterChef === "Tous" || b.chefId === filterChef
-  ), [brigades, startDate, endDate, filterChef]);
+  const bBrig   = useMemo(() => brigades.filter(b => inRange(b.date)), [brigades, startDate, endDate]);
   const dNotes  = useMemo(() => deliveryNotes.filter(d => inRange(d.date)), [deliveryNotes, startDate, endDate]);
   const exps    = useMemo(() => expenses.filter(e => inRange(e.date)), [expenses, startDate, endDate]);
   const purcs   = useMemo(() => purchases.filter(p => inRange(p.date)), [purchases, startDate, endDate]);
@@ -1351,16 +1348,6 @@ const Reports = () => {
                     className="w-full h-11 bg-slate-50 border border-slate-100 rounded-xl px-4 text-sm font-black text-blue-900 outline-none focus:ring-2 focus:ring-blue-900/10 focus:border-blue-900/20 transition-all" />
                 </div>
               ))}
-              {(activeCategory === "Opérations" || activeCategory === "Carburant") && (
-                <div className="space-y-1">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Chef de Brigade</label>
-                  <select value={filterChef} onChange={e => setFilterChef(e.target.value)}
-                    className="w-full h-11 bg-slate-50 border border-slate-100 rounded-xl px-4 text-sm font-black text-blue-900 outline-none focus:ring-2 focus:ring-blue-900/10 transition-all">
-                    <option value="Tous">Tous les chefs</option>
-                    {brigadeChefs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
-              )}
             </div>
           </div>
 
