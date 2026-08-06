@@ -1,0 +1,11 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Réglages locaux de l'agent (jamais partagés)
+.claude/settings.local.json

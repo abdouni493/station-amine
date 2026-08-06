@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Admin\\\\Desktop\\\\station\\\\src\\\\pages\")",
+      "Bash(Select-Object -ExpandProperty Name)",
+      "PowerShell(\\(Get-Content \"C:\\\\Users\\\\Admin\\\\Desktop\\\\station\\\\src\\\\store\\\\AppContext.tsx\" | Measure-Object -Line\\).Lines)",
+      "Bash(py --version)",
+      "Bash(where python*)",
+      "PowerShell(& \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Microsoft\\\\WindowsApps\\\\python3.exe\" --version 2>&1)",
+      "Bash(node -e \"console.log\\('node ok'\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"*)",
+      "Bash(node --input-type=commonjs *)",
+      "Bash(node_modules/.bin/tsc --noEmit *)",
+      "Bash(node_modules/.bin/vite build *)",
+      "Bash(\\\\u{FFFD})",
+      "Bash(node fix_encoding.js)",
+      "Bash(node fix_display.cjs)",
+      "Bash(node fix_display2.cjs)",
+      "Bash(node fix_ctrl.cjs)",
+      "Bash(node scan_prefix.cjs)",
+      "Bash(node *.cjs)",
+      "Bash(node *.js)",
+      "Bash(del \"C:/Users/Admin/Desktop/station/*)",
+      "Bash(mkdir -p *)",
+      "Bash(cd \"C:/Users/Admin/Desktop/station\" && node_modules/.bin/tsc --noEmit *)",
+      "Bash(cd \"C:/Users/Admin/Desktop/station\" && node -e *)",
+      "Bash(grep -v \"//\")",
+      "Bash(grep -n *)",
+      "Bash(grep -rn *)"
+    ]
+  }
+}

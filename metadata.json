@@ -1,0 +1,6 @@
+{
+  "name": "StationPro",
+  "description": "Station de services management system with real-time operations, inventory, and financial reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
