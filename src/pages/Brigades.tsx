@@ -62,6 +62,17 @@ type ArmoireSaleLine = {
   detailQty?: number;
   detailUnit?: string;
 };
+/** Couleurs par carburant — mêmes teintes que la page Cuves, pour lire d'un
+ *  coup d'œil quel produit sort d'un pistolet à l'étape 1. */
+const FUEL_CHIP: Record<string, { dot: string; text: string; soft: string }> = {
+  ESSENCE: { dot: 'bg-blue-500',    text: 'text-blue-700',    soft: 'bg-blue-50' },
+  SUPER:   { dot: 'bg-violet-500',  text: 'text-violet-700',  soft: 'bg-violet-50' },
+  GASOIL:  { dot: 'bg-emerald-500', text: 'text-emerald-700', soft: 'bg-emerald-50' },
+  DIESEL:  { dot: 'bg-emerald-500', text: 'text-emerald-700', soft: 'bg-emerald-50' },
+  GPL:     { dot: 'bg-orange-500',  text: 'text-orange-700',  soft: 'bg-orange-50' },
+};
+const fuelChip = (type?: string) => FUEL_CHIP[type || ''] || { dot: 'bg-slate-400', text: 'text-slate-600', soft: 'bg-slate-50' };
+
 import Skeleton from "../components/Skeleton";
 import BrigadeDetailModal from "../components/BrigadeDetailModal";
 import BrigadeAccountingModal from "../components/BrigadeAccountingModal";
@@ -113,7 +124,10 @@ const Brigades = () => {
   // Pompistes dont la liste de pistolets a été touchée à la main : leur sélection
   // n'est plus réalignée automatiquement sur leur piste.
   const [nozzlesTouched, setNozzlesTouched] = useState<Record<string, boolean>>({});
+  // Pompiste dont le panneau « pistolets d'une autre piste » est déplié.
   const [nozzlePickerFor, setNozzlePickerFor] = useState<string | null>(null);
+  // Recherche dans la liste des pompistes de l'étape 1 (équipes nombreuses).
+  const [wizPompisteSearch, setWizPompisteSearch] = useState('');
   const [canReactivate, setCanReactivate] = useState(false);
 
   // Accounting modal state
@@ -363,6 +377,11 @@ const Brigades = () => {
     setNozzlesTouched(prev => { const next = { ...prev }; delete next[pid]; return next; });
     setPompisteNozzles(prev => { const next = { ...prev }; delete next[pid]; return next; });
   };
+  /** Fixer d'un coup la liste des pistolets d'un pompiste (tout / aucun). */
+  const setNozzlesForPompiste = (pid: string, ids: string[]) => {
+    setNozzlesTouched(prev => ({ ...prev, [pid]: true }));
+    setPompisteNozzles(prev => ({ ...prev, [pid]: ids }));
+  };
 
   // Brigade pompiste assignments built from the current wizard selections.
   const wizAssignments = useMemo<NonNullable<Brigade['pompisteAssignments']>>(
@@ -376,6 +395,25 @@ const Brigades = () => {
   );
 
   const presentAssignments = useMemo(() => wizAssignments.filter(a => a.present), [wizAssignments]);
+
+  /**
+   * Donner une piste à un pompiste (étape 1). Une piste n'est jamais partagée :
+   * si elle est déjà tenue, les deux pompistes l'ÉCHANGENT (l'autre récupère
+   * celle qu'on vient de libérer). La sélection de pistolets des deux repart
+   * de leur nouvelle piste — sinon ils garderaient ceux de l'ancienne.
+   */
+  const assignTrackToPompiste = (pid: string, trackId: string) => {
+    const previous = trackOfPompiste(pid);
+    if (previous === trackId) return;
+    const holder = presentAssignments.find(a => a.pompisteId !== pid && a.trackId === trackId);
+    setPisteOverrides(prev => {
+      const next = { ...prev, [pid]: trackId };
+      if (holder) next[holder.pompisteId] = previous;
+      return next;
+    });
+    resetNozzlesForPompiste(pid);
+    if (holder) resetNozzlesForPompiste(holder.pompisteId);
+  };
 
   // ─── Pistolets en service pour cette brigade ──────────────────────────────
   // Un pistolet ne tourne que s'il a été attribué à un pompiste PRÉSENT à
@@ -1066,11 +1104,16 @@ const Brigades = () => {
     setActionMenuOpen(null);
     setActivateStep(1);
     setDeactivateStep(1);
-    setPompistePresence({});
+    // Toute l'équipe est PRÉSENTE d'office : le cas courant est que tout le
+    // monde travaille. On ne décoche que les absents du jour.
+    const defaultPresence: Record<string, 'present' | 'absent'> = {};
+    pompistes.forEach(p => { if (p.status === 'Actif') defaultPresence[p.id] = 'present'; });
+    setPompistePresence(defaultPresence);
     setPisteOverrides({});
     setPompisteNozzles({});
     setNozzlesTouched({});
     setNozzlePickerFor(null);
+    setWizPompisteSearch('');
     setCanReactivate(false);
     // New 7-step wizard resets
     const today = new Date().toISOString().split('T')[0];
@@ -1595,34 +1638,91 @@ const Brigades = () => {
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
 
-                  {/* STEP 1: Pompistes — sélection, piste et pistolets tenus */}
-                  {step === 1 && (
-                    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
-                      <div className="flex items-center justify-between">
-                        <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest">👥 Pompistes & Pistolets</label>
-                        <div className="flex gap-2 text-[10px] font-black">
-                          <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full">{presentCount} présent(s)</span>
-                          {absentCount > 0 && <span className="px-2 py-1 bg-red-100 text-red-700 rounded-full">{absentCount} absent(s)</span>}
+                  {/* STEP 1: Pompistes — présence, piste et pistolets tenus */}
+                  {step === 1 && (() => {
+                    // Toute l'équipe est présente par défaut : la recherche sert
+                    // seulement à retrouver vite quelqu'un dans une grande équipe.
+                    const search = wizPompisteSearch.trim().toLowerCase();
+                    const shownPompistes = search
+                      ? activePompistes.filter(p => p.name.toLowerCase().includes(search))
+                      : activePompistes;
+                    const heldNozzleCount = presentAssignments.reduce((s, a) => s + (a.nozzleIds || []).length, 0);
+                    const setAllPresence = (value: 'present' | 'absent' | null) => setPompistePresence(() => {
+                      if (!value) return {};
+                      const next: Record<string, 'present' | 'absent'> = {};
+                      activePompistes.forEach(p => { next[p.id] = value; });
+                      return next;
+                    });
+                    return (
+                    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+
+                      {/* ── Bandeau équipe : compteurs + actions groupées ────── */}
+                      <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-50 p-4 shadow-sm">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[10px] font-black text-blue-900 uppercase tracking-widest">👥 Équipe de la brigade</p>
+                            <p className="text-[10px] font-bold text-slate-500 mt-1 max-w-md leading-relaxed">
+                              Tout le monde est <strong className="text-green-600">présent</strong> d'office — marquez seulement les absents.
+                              Chaque présent tient une piste et ses pistolets sont préchargés.
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <div className="px-3 py-2 rounded-xl bg-green-50 border border-green-200 text-center min-w-[62px]">
+                              <p className="text-base font-black text-green-700 leading-none">{presentCount}</p>
+                              <p className="text-[8px] font-black uppercase tracking-widest text-green-600 mt-1">Présents</p>
+                            </div>
+                            <div className={cn("px-3 py-2 rounded-xl border text-center min-w-[62px]", absentCount ? "bg-red-50 border-red-200" : "bg-slate-50 border-slate-200")}>
+                              <p className={cn("text-base font-black leading-none", absentCount ? "text-red-700" : "text-slate-400")}>{absentCount}</p>
+                              <p className={cn("text-[8px] font-black uppercase tracking-widest mt-1", absentCount ? "text-red-600" : "text-slate-400")}>Absents</p>
+                            </div>
+                            <div className="px-3 py-2 rounded-xl bg-purple-50 border border-purple-200 text-center min-w-[62px]">
+                              <p className="text-base font-black text-purple-700 leading-none">{heldNozzleCount}</p>
+                              <p className="text-[8px] font-black uppercase tracking-widest text-purple-600 mt-1">Pistolets</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => setAllPresence('present')}
+                            className="px-3 py-1.5 rounded-lg bg-green-500 text-white text-[9px] font-black uppercase tracking-widest hover:bg-green-600 transition-all shadow-sm"
+                          >✓ Tous présents</button>
+                          <button
+                            onClick={() => setAllPresence('absent')}
+                            className="px-3 py-1.5 rounded-lg bg-white border border-red-200 text-red-600 text-[9px] font-black uppercase tracking-widest hover:bg-red-50 transition-all"
+                          >Tous absents</button>
+                          <button
+                            onClick={() => setAllPresence(null)}
+                            className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-500 text-[9px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all"
+                          >Vider</button>
+                          {activePompistes.length > 5 && (
+                            <div className="relative flex-1 min-w-[160px]">
+                              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                              <input
+                                value={wizPompisteSearch}
+                                onChange={e => setWizPompisteSearch(e.target.value)}
+                                placeholder="Rechercher un pompiste…"
+                                className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-white border border-slate-200 text-[11px] font-bold outline-none focus:ring-2 focus:ring-blue-300"
+                              />
+                            </div>
+                          )}
                         </div>
                       </div>
 
-                      <div className="p-3 bg-blue-50 rounded-xl border border-blue-200 text-[11px] font-bold text-blue-700">
-                        ℹ️ Composez la brigade : marquez chaque pompiste <strong>Présent</strong> (ou <strong>Absent</strong> pour lui enregistrer une absence),
-                        donnez-lui sa piste, puis ajustez ses pistolets. Ceux de la piste sont proposés d'office — retirez-en ou ajoutez-en à volonté.
-                        Un second clic sur Présent / Absent le sort de la brigade.
-                      </div>
-
                       {!step1Valid && (
-                        <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-[11px] font-bold text-red-700">
-                          {presentAssignments.length === 0
-                            ? "⚠️ Sélectionnez au moins un pompiste présent pour continuer."
-                            : step1MissingPiste
-                              ? "⚠️ Chaque pompiste présent doit avoir une piste assignée."
-                              : step1DuplicatePiste
-                                ? "⚠️ Deux pompistes ne peuvent pas partager la même piste."
-                                : step1MissingNozzles
-                                  ? "⚠️ Chaque pompiste présent doit tenir au moins un pistolet."
-                                  : "⚠️ Un même pistolet ne peut pas être tenu par deux pompistes."}
+                        <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-[11px] font-bold text-red-700">
+                          <AlertCircle className="w-4 h-4 flex-shrink-0 mt-px" />
+                          <span>
+                            {presentAssignments.length === 0
+                              ? "Sélectionnez au moins un pompiste présent pour continuer."
+                              : step1MissingPiste
+                                ? "Chaque pompiste présent doit avoir une piste assignée."
+                                : step1DuplicatePiste
+                                  ? "Deux pompistes ne peuvent pas partager la même piste."
+                                  : step1MissingNozzles
+                                    ? "Chaque pompiste présent doit tenir au moins un pistolet."
+                                    : "Un même pistolet ne peut pas être tenu par deux pompistes."}
+                          </span>
                         </div>
                       )}
 
@@ -1630,25 +1730,34 @@ const Brigades = () => {
                         <div className="p-6 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
                           <p className="text-sm text-slate-400 italic">Aucun pompiste actif — créez-en depuis la page Pompistes.</p>
                         </div>
+                      ) : shownPompistes.length === 0 ? (
+                        <div className="p-6 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
+                          <p className="text-sm text-slate-400 italic">Aucun pompiste ne correspond à « {wizPompisteSearch} ».</p>
+                        </div>
                       ) : (
                         <div className="space-y-3">
-                          {activePompistes.map(p => {
+                          {shownPompistes.map(p => {
                             const presence = pompistePresence[p.id];
                             const inBrigade = !!presence;
                             const isPresent = presence === 'present';
                             const isAbsent = presence === 'absent';
                             const defaultTrack = tracks.find(t => t.id === p.trackId);
                             const effTrack = trackOfPompiste(p.id);
+                            const effTrackName = tracks.find(t => t.id === effTrack)?.name;
                             const myNozzleIds = isPresent ? nozzlesOfPompiste(p.id) : [];
                             const trackNozzles = activeNozzlesOfTrack(effTrack);
                             // Pistolets pris hors de sa piste — listés à part pour rester lisible.
                             const extraNozzles = pumpNozzles.filter(n => myNozzleIds.includes(n.id) && !trackNozzles.some(tn => tn.id === n.id));
-                            // Pistolets encore libres : ceux que personne d'autre ne tient.
+                            const myNozzles = [...trackNozzles, ...extraNozzles];
+                            // Pistolets encore libres, hors de sa piste : ceux que personne d'autre ne tient.
                             const addableNozzles = pumpNozzles.filter(n =>
                               n.status === 'Actif' && !myNozzleIds.includes(n.id)
+                              && !myNozzles.some(x => x.id === n.id)
                               && !presentAssignments.some(a => a.pompisteId !== p.id && (a.nozzleIds || []).includes(n.id)));
                             const missingPiste = isPresent && !effTrack;
                             const duplicatePiste = isPresent && !!effTrack && presentTrackUsage[effTrack] > 1;
+                            const noNozzle = isPresent && myNozzleIds.length === 0;
+                            const pickerOpen = nozzlePickerFor === p.id;
                             const setPresence = (value: 'present' | 'absent') => setPompistePresence(prev => {
                               const next = { ...prev };
                               if (next[p.id] === value) delete next[p.id]; else next[p.id] = value;
@@ -1656,132 +1765,227 @@ const Brigades = () => {
                             });
                             return (
                               <div key={p.id} className={cn(
-                                "p-4 rounded-2xl border-2 transition-all",
+                                "rounded-2xl border-2 overflow-hidden transition-all",
                                 !inBrigade ? "border-slate-200 bg-slate-50/70"
-                                  : isAbsent ? "border-red-200 bg-red-50/50 opacity-80"
-                                  : "border-green-200 bg-white",
+                                  : isAbsent ? "border-red-200 bg-red-50/40"
+                                  : (missingPiste || duplicatePiste || noNozzle) ? "border-red-300 bg-white shadow-sm"
+                                  : "border-green-200 bg-white shadow-sm",
                               )}>
-                                <div className="flex items-center gap-3">
+                                {/* En-tête : identité + bascule présence */}
+                                <div className={cn(
+                                  "flex items-center gap-3 p-3.5",
+                                  isPresent && "bg-gradient-to-r from-green-50/70 to-transparent",
+                                )}>
                                   <div className={cn(
-                                    "w-10 h-10 rounded-full flex items-center justify-center font-black text-white flex-shrink-0",
+                                    "w-11 h-11 rounded-2xl flex items-center justify-center font-black text-white flex-shrink-0 shadow-sm",
                                     !inBrigade ? "bg-slate-300" : isAbsent ? "bg-red-400" : "bg-gradient-to-br from-blue-700 to-blue-900",
                                   )}>
                                     {p.name[0]}
                                   </div>
                                   <div className="flex-1 min-w-0">
                                     <p className="text-sm font-black text-slate-800 truncate">{p.name}</p>
-                                    <p className="text-[10px] text-slate-500">Piste par défaut: {defaultTrack?.name || 'N/A'}</p>
+                                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                      {isPresent ? (
+                                        <>
+                                          <span className={cn(
+                                            "px-2 py-0.5 rounded-full text-[9px] font-black",
+                                            effTrack ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-600",
+                                          )}>🛣 {effTrackName || 'Piste à choisir'}</span>
+                                          <span className={cn(
+                                            "px-2 py-0.5 rounded-full text-[9px] font-black",
+                                            myNozzleIds.length ? "bg-purple-100 text-purple-700" : "bg-red-100 text-red-600",
+                                          )}>⚡ {myNozzleIds.length} pistolet{myNozzleIds.length > 1 ? 's' : ''}</span>
+                                        </>
+                                      ) : (
+                                        <span className="text-[10px] text-slate-400 font-bold">
+                                          {isAbsent ? 'Absence enregistrée sur sa fiche' : `Piste par défaut : ${defaultTrack?.name || 'N/A'}`}
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
-                                  <div className="flex gap-1 flex-shrink-0">
+                                  <div className="flex bg-slate-100 rounded-xl p-1 gap-1 flex-shrink-0">
                                     <button
                                       onClick={() => setPresence('present')}
-                                      className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all", isPresent ? "bg-green-500 text-white shadow-sm" : "bg-slate-100 text-slate-400 hover:bg-green-100")}
+                                      title="Présent — un second clic le sort de la brigade"
+                                      className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all", isPresent ? "bg-green-500 text-white shadow" : "text-slate-400 hover:text-green-600 hover:bg-white")}
                                     >Présent</button>
                                     <button
                                       onClick={() => setPresence('absent')}
-                                      className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all", isAbsent ? "bg-red-500 text-white shadow-sm" : "bg-slate-100 text-slate-400 hover:bg-red-100")}
+                                      title="Absent — une absence est enregistrée sur sa fiche"
+                                      className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all", isAbsent ? "bg-red-500 text-white shadow" : "text-slate-400 hover:text-red-600 hover:bg-white")}
                                     >Absent</button>
                                   </div>
                                 </div>
 
                                 {isPresent && (
-                                  <div className="mt-3 space-y-3">
-                                    {/* Piste tenue pendant cette brigade */}
+                                  <div className="px-3.5 pb-3.5 space-y-3 border-t border-slate-100 pt-3">
+                                    {/* ── Piste : une pastille par piste, jamais partagée ── */}
                                     <div>
-                                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Piste pour cette brigade</label>
-                                      <select
-                                        value={effTrack}
-                                        onChange={e => { setPisteOverrides(prev => ({ ...prev, [p.id]: e.target.value })); resetNozzlesForPompiste(p.id); }}
-                                        className={cn("w-full px-3 py-2 rounded-xl text-sm font-bold outline-none focus:ring-2", (missingPiste || duplicatePiste) ? "bg-red-50 border-2 border-red-400 focus:ring-red-300" : "bg-slate-50 border border-slate-200 focus:ring-blue-400")}
-                                      >
-                                        <option value="">— Sélectionner une piste —</option>
-                                        {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                      </select>
-                                      {missingPiste && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Veuillez sélectionner une piste pour ce pompiste</p>}
-                                      {duplicatePiste && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Cette piste est déjà assignée à un autre pompiste</p>}
+                                      <div className="flex items-center justify-between mb-1.5">
+                                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">🛣 Piste tenue</label>
+                                        {defaultTrack && effTrack !== defaultTrack.id && (
+                                          <button onClick={() => assignTrackToPompiste(p.id, defaultTrack.id)}
+                                            className="text-[9px] font-black uppercase text-blue-600 hover:underline">
+                                            ↺ Sa piste ({defaultTrack.name})
+                                          </button>
+                                        )}
+                                      </div>
+                                      {tracks.length === 0 ? (
+                                        <p className="text-[10px] text-red-600 font-bold">⚠️ Aucune piste enregistrée — créez-en depuis la page Pistes.</p>
+                                      ) : (
+                                        <div className="flex flex-wrap gap-1.5">
+                                          {tracks.map(t => {
+                                            const active = effTrack === t.id;
+                                            const holder = presentAssignments.find(a => a.pompisteId !== p.id && a.trackId === t.id);
+                                            const holderName = holder ? (pompistes.find(x => x.id === holder.pompisteId)?.name || 'un pompiste') : '';
+                                            const count = activeNozzlesOfTrack(t.id).length;
+                                            return (
+                                              <button
+                                                key={t.id}
+                                                onClick={() => assignTrackToPompiste(p.id, t.id)}
+                                                title={holder ? `Tenue par ${holderName} — cliquer pour échanger les pistes` : `${count} pistolet(s) actif(s)`}
+                                                className={cn(
+                                                  "px-3 py-1.5 rounded-xl border-2 text-[11px] font-black transition-all flex items-center gap-1.5",
+                                                  active ? "border-blue-600 bg-blue-600 text-white shadow-md scale-[1.02]"
+                                                    : holder ? "border-slate-200 bg-slate-50 text-slate-400 hover:border-amber-300 hover:bg-amber-50"
+                                                    : "border-slate-200 bg-white text-slate-600 hover:border-blue-400 hover:bg-blue-50",
+                                                )}
+                                              >
+                                                {active && <Check className="w-3 h-3" />}
+                                                {t.name}
+                                                <span className={cn("text-[9px] font-black", active ? "text-blue-100" : "text-slate-400")}>
+                                                  {holder ? `· ${holderName.split(' ')[0]}` : `· ${count}⚡`}
+                                                </span>
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
+                                      {missingPiste && <p className="text-[10px] text-red-600 font-bold mt-1.5">⚠️ Choisissez une piste pour ce pompiste</p>}
+                                      {duplicatePiste && <p className="text-[10px] text-red-600 font-bold mt-1.5">⚠️ Cette piste est déjà tenue par un autre pompiste</p>}
                                     </div>
 
-                                    {/* Pistolets tenus — proposés depuis la piste, ajustables */}
+                                    {/* ── Pistolets : ceux de la piste, cochés d'office ── */}
                                     <div>
-                                      <div className="flex items-center justify-between mb-1">
-                                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
-                                          Pistolets tenus ({myNozzleIds.length})
+                                      <div className="flex items-center justify-between mb-1.5 gap-2">
+                                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">
+                                          ⚡ Pistolets tenus
+                                          <span className={cn("ml-1.5 px-1.5 py-0.5 rounded-full", myNozzleIds.length ? "bg-purple-100 text-purple-700" : "bg-red-100 text-red-600")}>
+                                            {myNozzleIds.length}/{myNozzles.length}
+                                          </span>
                                         </label>
-                                        {nozzlesTouched[p.id] && (
-                                          <button onClick={() => resetNozzlesForPompiste(p.id)}
-                                            className="text-[9px] font-black uppercase text-blue-600 hover:underline">
-                                            ↺ Repartir de la piste
-                                          </button>
+                                        {myNozzles.length > 0 && (
+                                          <div className="flex items-center gap-1">
+                                            <button onClick={() => setNozzlesForPompiste(p.id, myNozzles.map(n => n.id))}
+                                              className="px-2 py-1 rounded-lg bg-purple-50 text-purple-700 text-[9px] font-black uppercase hover:bg-purple-100 transition-all">Tout</button>
+                                            <button onClick={() => setNozzlesForPompiste(p.id, [])}
+                                              className="px-2 py-1 rounded-lg bg-slate-50 text-slate-500 text-[9px] font-black uppercase hover:bg-slate-100 transition-all">Aucun</button>
+                                            {nozzlesTouched[p.id] && (
+                                              <button onClick={() => resetNozzlesForPompiste(p.id)} title="Revenir aux pistolets de la piste"
+                                                className="px-2 py-1 rounded-lg bg-blue-50 text-blue-700 text-[9px] font-black uppercase hover:bg-blue-100 transition-all">↺ Piste</button>
+                                            )}
+                                          </div>
                                         )}
                                       </div>
 
                                       {!effTrack ? (
-                                        <p className="text-[10px] text-slate-400 font-bold italic">Sélectionnez d'abord une piste.</p>
+                                        <p className="text-[10px] text-slate-400 font-bold italic">Choisissez d'abord une piste.</p>
                                       ) : (
                                         <div className="space-y-2">
-                                          {/* Pistolets de la piste : cochés = tenus */}
-                                          {trackNozzles.length === 0 && extraNozzles.length === 0 ? (
+                                          {myNozzles.length === 0 ? (
                                             <p className="text-[10px] text-red-600 font-bold">⚠️ Aucun pistolet actif sur cette piste — ajoutez-en un ci-dessous.</p>
                                           ) : (
-                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                              {[...trackNozzles, ...extraNozzles].map(n => {
+                                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                              {myNozzles.map(n => {
                                                 const held = myNozzleIds.includes(n.id);
-                                                const takenBy = presentAssignments.find(a => a.pompisteId !== p.id && (a.nozzleIds || []).includes(n.id));
-                                                const takenByName = takenBy ? (pompistes.find(x => x.id === takenBy.pompisteId)?.name || 'un autre pompiste') : '';
                                                 const isExtra = extraNozzles.some(x => x.id === n.id);
                                                 const pump = pumps.find(pu => pu.id === n.pumpId);
+                                                const fc = fuelChip(pump?.type);
+                                                // Conflit : un autre pompiste présent l'a emprunté.
+                                                const takenBy = presentAssignments.find(a => a.pompisteId !== p.id && (a.nozzleIds || []).includes(n.id));
+                                                const takenByName = takenBy ? (pompistes.find(x => x.id === takenBy.pompisteId)?.name || 'un autre pompiste') : '';
+                                                const conflict = held && !!takenBy;
                                                 return (
                                                   <button
                                                     key={n.id}
                                                     onClick={() => toggleNozzleForPompiste(p.id, n.id)}
+                                                    title={takenBy ? `Également tenu par ${takenByName}` : undefined}
                                                     className={cn(
-                                                      "flex items-center gap-2 p-2.5 rounded-xl border-2 text-left transition-all",
-                                                      takenBy ? "border-red-300 bg-red-50"
-                                                        : held ? "border-purple-400 bg-purple-50"
-                                                        : "border-slate-200 bg-white hover:border-purple-300",
+                                                      "relative p-2.5 rounded-xl border-2 text-left transition-all group",
+                                                      conflict ? "border-red-400 bg-red-50"
+                                                        : held ? "border-purple-400 bg-purple-50/70 shadow-sm"
+                                                        : "border-slate-200 bg-white hover:border-purple-300 hover:bg-purple-50/30",
                                                     )}
                                                   >
-                                                    <div className={cn(
-                                                      "w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all",
-                                                      held ? "bg-purple-500 border-purple-500" : "border-slate-300 bg-white",
-                                                    )}>
-                                                      {held && <Check className="w-3 h-3 text-white" />}
+                                                    <div className="flex items-center gap-2">
+                                                      <div className={cn(
+                                                        "w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all",
+                                                        conflict ? "bg-red-500 border-red-500"
+                                                          : held ? "bg-purple-500 border-purple-500"
+                                                          : "border-slate-300 bg-white group-hover:border-purple-300",
+                                                      )}>
+                                                        {held && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+                                                      </div>
+                                                      <p className={cn("text-[11px] font-black truncate", conflict ? "text-red-700" : held ? "text-purple-900" : "text-slate-700")}>{n.name}</p>
                                                     </div>
-                                                    <div className="min-w-0 flex-1">
-                                                      <p className="text-[11px] font-black text-slate-800 truncate">⚡ {n.name}</p>
-                                                      <p className="text-[9px] text-slate-500 truncate">
-                                                        {pump?.name || '—'} · {pump?.type || '—'}
-                                                        {isExtra && <span className="text-orange-600 font-black"> · hors piste</span>}
-                                                      </p>
-                                                      {takenBy && <p className="text-[9px] text-red-600 font-black">Déjà tenu par {takenByName}</p>}
+                                                    <div className="flex items-center gap-1.5 mt-1.5 pl-7">
+                                                      <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", fc.dot)} />
+                                                      <span className={cn("text-[9px] font-black uppercase truncate", fc.text)}>{pump?.type || '—'}</span>
                                                     </div>
+                                                    <p className="text-[9px] text-slate-400 font-bold truncate pl-7">{pump?.name || '—'}</p>
+                                                    {conflict && <p className="text-[9px] text-red-600 font-black truncate pl-7 mt-0.5">Aussi tenu par {takenByName}</p>}
+                                                    {isExtra && !conflict && (
+                                                      <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-700 text-[8px] font-black uppercase">Hors piste</span>
+                                                    )}
                                                   </button>
                                                 );
                                               })}
                                             </div>
                                           )}
 
-                                          {/* Ajouter un pistolet d'une autre piste */}
-                                          {nozzlePickerFor === p.id ? (
-                                            <select
-                                              autoFocus
-                                              value=""
-                                              onChange={e => { if (e.target.value) toggleNozzleForPompiste(p.id, e.target.value); setNozzlePickerFor(null); }}
-                                              onBlur={() => setNozzlePickerFor(null)}
-                                              className="w-full px-3 py-2 rounded-xl text-sm font-bold bg-white border-2 border-purple-300 outline-none focus:ring-2 focus:ring-purple-300"
-                                            >
-                                              <option value="">— Choisir un pistolet à ajouter —</option>
-                                              {addableNozzles.map(n => <option key={n.id} value={n.id}>{nozzleLabel(n)}</option>)}
-                                            </select>
-                                          ) : (
-                                            <button
-                                              onClick={() => setNozzlePickerFor(p.id)}
-                                              disabled={addableNozzles.length === 0}
-                                              className="w-full py-2 rounded-xl border-2 border-dashed border-purple-300 text-[10px] font-black uppercase tracking-widest text-purple-600 hover:bg-purple-50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                                            >
-                                              + Ajouter un pistolet
-                                            </button>
-                                          )}
+                                          {/* Emprunter un pistolet d'une autre piste */}
+                                          <button
+                                            onClick={() => setNozzlePickerFor(pickerOpen ? null : p.id)}
+                                            disabled={addableNozzles.length === 0}
+                                            className={cn(
+                                              "w-full py-2 rounded-xl border-2 border-dashed text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed",
+                                              pickerOpen ? "border-purple-400 bg-purple-50 text-purple-700" : "border-purple-300 text-purple-600 hover:bg-purple-50",
+                                            )}
+                                          >
+                                            <Plus className={cn("w-3.5 h-3.5 transition-transform", pickerOpen && "rotate-45")} />
+                                            {pickerOpen ? 'Fermer' : `Pistolet d'une autre piste (${addableNozzles.length})`}
+                                          </button>
+
+                                          <AnimatePresence>
+                                            {pickerOpen && addableNozzles.length > 0 && (
+                                              <motion.div
+                                                initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
+                                                className="overflow-hidden"
+                                              >
+                                                <div className="p-2 rounded-xl bg-slate-50 border border-slate-200 max-h-52 overflow-y-auto custom-scrollbar grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                                  {addableNozzles.map(n => {
+                                                    const pump = pumps.find(pu => pu.id === n.pumpId);
+                                                    const fc = fuelChip(pump?.type);
+                                                    const trk = tracks.find(t => t.id === trackOfNozzle[n.id]);
+                                                    return (
+                                                      <button
+                                                        key={n.id}
+                                                        onClick={() => { toggleNozzleForPompiste(p.id, n.id); }}
+                                                        className="flex items-center gap-2 p-2 rounded-lg bg-white border border-slate-200 hover:border-purple-400 hover:bg-purple-50 text-left transition-all"
+                                                      >
+                                                        <span className={cn("w-2 h-2 rounded-full flex-shrink-0", fc.dot)} />
+                                                        <div className="min-w-0 flex-1">
+                                                          <p className="text-[10px] font-black text-slate-700 truncate">{n.name}</p>
+                                                          <p className="text-[9px] text-slate-400 font-bold truncate">{trk?.name || 'Sans piste'} · {pump?.name || '—'}</p>
+                                                        </div>
+                                                        <Plus className="w-3.5 h-3.5 text-purple-500 flex-shrink-0" />
+                                                      </button>
+                                                    );
+                                                  })}
+                                                </div>
+                                              </motion.div>
+                                            )}
+                                          </AnimatePresence>
                                         </div>
                                       )}
                                     </div>
@@ -1793,7 +1997,8 @@ const Brigades = () => {
                         </div>
                       )}
                     </motion.div>
-                  )}
+                    );
+                  })()}
                   {/* STEP 2: Planning — Start/End datetime */}
                   {step === 2 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
